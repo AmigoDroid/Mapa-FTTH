@@ -26,6 +26,11 @@ interface NodeDragState {
   offsetY: number;
 }
 
+const GPON_FIBER_LOSS_DB_PER_KM = 0.25;
+const GPON_FUSION_LOSS_DB = 0.1;
+const GPON_MECHANICAL_LOSS_DB = 0.2;
+const GPON_CONNECTOR_LOSS_DB = 0.2;
+
 export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const {
     currentNetwork,
@@ -183,6 +188,89 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   );
 
   const boardConnections = localConnections;
+
+  const fiberUsageStats = useMemo(() => {
+    const total = currentBox.fibers.length;
+    const active = currentBox.fibers.filter((fiber) => fiber.status === 'active').length;
+    const inactive = currentBox.fibers.filter((fiber) => fiber.status === 'inactive').length;
+    const reserved = currentBox.fibers.filter((fiber) => fiber.status === 'reserved').length;
+    const faulty = currentBox.fibers.filter((fiber) => fiber.status === 'faulty').length;
+    const utilization = total > 0 ? (active / total) * 100 : 0;
+    return { total, active, inactive, reserved, faulty, utilization };
+  }, [currentBox.fibers]);
+
+  const cableStats = useMemo(() => {
+    const incoming = relatedCables.filter((cable) => cable.endPoint === currentBox.id);
+    const outgoing = relatedCables.filter((cable) => cable.startPoint === currentBox.id);
+    const totalLengthMeters = relatedCables.reduce((sum, cable) => sum + (cable.length || 0), 0);
+    const avgLengthMeters = relatedCables.length > 0 ? totalLengthMeters / relatedCables.length : 0;
+    const totalCableFibers = relatedCables.reduce((sum, cable) => sum + cable.fiberCount, 0);
+    return { incoming, outgoing, totalLengthMeters, avgLengthMeters, totalCableFibers };
+  }, [relatedCables, currentBox.id]);
+
+  const splitterStats = useMemo(() => {
+    const splitters = currentBox.splitters || [];
+    const inputPorts = splitters.reduce((sum, splitter) => sum + splitter.inputFibers.length, 0);
+    const outputPorts = splitters.reduce((sum, splitter) => sum + splitter.outputFibers.length, 0);
+    const attenuationDb = splitters.reduce((sum, splitter) => sum + (splitter.attenuation || 0), 0);
+    return { count: splitters.length, inputPorts, outputPorts, attenuationDb };
+  }, [currentBox.splitters]);
+
+  const fusionLossRows = useMemo(() => {
+    const splitterById = (currentBox.splitters || []).reduce<Record<string, Splitter>>((acc, splitter) => {
+      acc[splitter.id] = splitter;
+      return acc;
+    }, {});
+
+    const fiberToEntity = endpointOptions.reduce<Record<string, string>>((acc, endpoint) => {
+      acc[endpoint.id] = endpoint.entityId;
+      return acc;
+    }, {});
+
+    return localConnections.map((fusion) => {
+      const endpointA = endpointById[fusion.fiberAId];
+      const endpointB = endpointById[fusion.fiberBId];
+
+      const cableA = relatedCables.find((cable) => cable.fibers.some((fiber) => fiber.id === fusion.fiberAId));
+      const cableB = relatedCables.find((cable) => cable.fibers.some((fiber) => fiber.id === fusion.fiberBId));
+      const routeMeters = (cableA?.length || 0) + (cableB?.length || 0);
+
+      const fiberDb = (routeMeters / 1000) * GPON_FIBER_LOSS_DB_PER_KM;
+      const fusionDb = fusion.fusionType === 'fusion' ? GPON_FUSION_LOSS_DB : 0;
+      const mechanicalDb = fusion.fusionType === 'mechanical' ? GPON_MECHANICAL_LOSS_DB : 0;
+      const connectorDb = fusion.fusionType === 'connector' ? GPON_CONNECTOR_LOSS_DB : 0;
+
+      const entityA = fiberToEntity[fusion.fiberAId];
+      const entityB = fiberToEntity[fusion.fiberBId];
+
+      const splitterIdA = entityA?.startsWith('splitter:') ? entityA.replace('splitter:', '') : null;
+      const splitterIdB = entityB?.startsWith('splitter:') ? entityB.replace('splitter:', '') : null;
+      const splitterDb = (splitterIdA ? splitterById[splitterIdA]?.attenuation || 0 : 0) + (splitterIdB ? splitterById[splitterIdB]?.attenuation || 0 : 0);
+
+      const estimatedLossDb = fiberDb + fusionDb + mechanicalDb + connectorDb + splitterDb;
+
+      return {
+        id: fusion.id,
+        fiberA: endpointA?.label || fusion.fiberAId,
+        fiberB: endpointB?.label || fusion.fiberBId,
+        fusionType: fusion.fusionType,
+        routeMeters,
+        fiberDb,
+        fusionDb,
+        mechanicalDb,
+        connectorDb,
+        splitterDb,
+        estimatedLossDb,
+      };
+    });
+  }, [localConnections, currentBox.splitters, endpointById, endpointOptions, relatedCables]);
+
+  const gponSummary = useMemo(() => {
+    const totalLossDb = fusionLossRows.reduce((sum, row) => sum + row.estimatedLossDb, 0);
+    const avgLossDb = fusionLossRows.length > 0 ? totalLossDb / fusionLossRows.length : 0;
+    const maxLossDb = fusionLossRows.reduce((max, row) => Math.max(max, row.estimatedLossDb), 0);
+    return { totalLossDb, avgLossDb, maxLossDb };
+  }, [fusionLossRows]);
 
   const endpointsByEntity = useMemo(() => {
     return endpointOptions.reduce<Record<string, EndpointOption[]>>((acc, endpoint) => {
@@ -739,6 +827,29 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
           <TabsContent value="info" className="space-y-4">
             {!editingBox ? (
               <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="rounded-lg border p-3 bg-gray-50">
+                    <p className="text-xs text-gray-500">Fibras ativas</p>
+                    <p className="text-2xl font-semibold">{fiberUsageStats.active}</p>
+                    <p className="text-xs text-gray-500">de {fiberUsageStats.total}</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-gray-50">
+                    <p className="text-xs text-gray-500">Utilizacao</p>
+                    <p className="text-2xl font-semibold">{fiberUsageStats.utilization.toFixed(1)}%</p>
+                    <p className="text-xs text-gray-500">ocupacao da caixa</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-gray-50">
+                    <p className="text-xs text-gray-500">Cabos conectados</p>
+                    <p className="text-2xl font-semibold">{relatedCables.length}</p>
+                    <p className="text-xs text-gray-500">{cableStats.totalCableFibers} fibras de cabo</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-gray-50">
+                    <p className="text-xs text-gray-500">Perda media GPON</p>
+                    <p className="text-2xl font-semibold">{gponSummary.avgLossDb.toFixed(2)} dB</p>
+                    <p className="text-xs text-gray-500">por fusao local</p>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div><Label className="text-gray-500">Nome</Label><p className="font-medium">{currentBox.name}</p></div>
                   <div><Label className="text-gray-500">Tipo</Label><p className="font-medium">{currentBox.type}</p></div>
@@ -758,6 +869,100 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                   )}
                   {currentBox.manufacturer && <div><Label className="text-gray-500">Fabricante</Label><p className="font-medium">{currentBox.manufacturer}</p></div>}
                 </div>
+
+                <div className="rounded-lg border p-4 space-y-3">
+                  <h4 className="font-semibold">Documentacao tecnica FTTH</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <Label className="text-gray-500">Cabos entrada</Label>
+                      <p className="font-medium">{cableStats.incoming.length}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Cabos saida</Label>
+                      <p className="font-medium">{cableStats.outgoing.length}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Comprimento total</Label>
+                      <p className="font-medium">{(cableStats.totalLengthMeters / 1000).toFixed(2)} km</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Comprimento medio</Label>
+                      <p className="font-medium">{Math.round(cableStats.avgLengthMeters)} m</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Fibras inativas</Label>
+                      <p className="font-medium">{fiberUsageStats.inactive}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Fibras reservadas</Label>
+                      <p className="font-medium">{fiberUsageStats.reserved}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Fibras com falha</Label>
+                      <p className="font-medium">{fiberUsageStats.faulty}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Splitters instalados</Label>
+                      <p className="font-medium">{splitterStats.count} ({splitterStats.inputPorts} IN / {splitterStats.outputPorts} OUT)</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Atenuacao splitters</Label>
+                      <p className="font-medium">{splitterStats.attenuationDb.toFixed(2)} dB</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Fusoes internas</Label>
+                      <p className="font-medium">{localConnections.length}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Perda total estimada</Label>
+                      <p className="font-medium">{gponSummary.totalLossDb.toFixed(2)} dB</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500">Pior caso por fusao</Label>
+                      <p className="font-medium">{gponSummary.maxLossDb.toFixed(2)} dB</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold">Atenuacao GPON por fibra/fusao</h4>
+                    <p className="text-xs text-gray-500">
+                      Modelo: fibra {GPON_FIBER_LOSS_DB_PER_KM} dB/km, fusao {GPON_FUSION_LOSS_DB} dB, conector {GPON_CONNECTOR_LOSS_DB} dB
+                    </p>
+                  </div>
+                  {fusionLossRows.length === 0 ? (
+                    <div className="text-sm text-gray-500">Nenhuma fusao interna para estimativa de perda.</div>
+                  ) : (
+                    <div className="max-h-[220px] overflow-auto rounded-md border">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr>
+                            <th className="text-left p-2">Fibra A</th>
+                            <th className="text-left p-2">Fibra B</th>
+                            <th className="text-left p-2">Tipo</th>
+                            <th className="text-right p-2">Rota</th>
+                            <th className="text-right p-2">Perda fibra</th>
+                            <th className="text-right p-2">Perda total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {fusionLossRows.map((row) => (
+                            <tr key={row.id} className="border-t">
+                              <td className="p-2">{row.fiberA}</td>
+                              <td className="p-2">{row.fiberB}</td>
+                              <td className="p-2 uppercase">{row.fusionType}</td>
+                              <td className="p-2 text-right">{Math.round(row.routeMeters)} m</td>
+                              <td className="p-2 text-right">{row.fiberDb.toFixed(2)} dB</td>
+                              <td className="p-2 text-right font-semibold">{row.estimatedLossDb.toFixed(2)} dB</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex gap-2">
                   <Button onClick={() => setEditingBox(true)}><Edit3 className="w-4 h-4 mr-1" />Editar</Button>
                   <Button variant="destructive" onClick={() => { if (confirm('Tem certeza que deseja excluir esta caixa?')) { removeBox(currentBox.id); onOpenChange(false); } }}><Trash2 className="w-4 h-4 mr-1" />Excluir</Button>
