@@ -6,6 +6,7 @@ import type {
   Fiber, 
   Fusion, 
   Splitter,
+  ReservePoint,
   Position, 
   ContinuityTest,
   Client,
@@ -34,10 +35,19 @@ interface NetworkActions {
   addCable: (cable: Omit<Cable, 'id' | 'fibers'>) => Cable;
   updateCable: (cableId: string, updates: Partial<Cable>) => void;
   removeCable: (cableId: string) => void;
+  addReserve: (reserve: Omit<ReservePoint, 'id'>) => ReservePoint;
+  updateReserve: (reserveId: string, updates: Partial<ReservePoint>) => void;
+  removeReserve: (reserveId: string) => void;
   addFusion: (fusion: Omit<Fusion, 'id' | 'dateCreated'>) => Fusion;
   removeFusion: (fusionId: string) => void;
   connectFibers: (boxAId: string, fiberAId: string, boxBId: string, fiberBId: string, position: Position) => Fusion | null;
-  connectBoxEndpoints: (boxId: string, endpointAId: string, endpointBId: string, fusionType?: Fusion['fusionType']) => Fusion | null;
+  connectBoxEndpoints: (
+    boxId: string,
+    endpointAId: string,
+    endpointBId: string,
+    fusionType?: Fusion['fusionType'],
+    noLoss?: boolean
+  ) => Fusion | null;
   disconnectFibers: (fusionId: string) => void;
   addSplitterToBox: (boxId: string, splitterData: Omit<Splitter, 'id' | 'inputFibers' | 'outputFibers' | 'attenuation' | 'status'>) => Splitter | null;
   removeSplitterFromBox: (boxId: string, splitterId: string) => void;
@@ -59,11 +69,13 @@ interface NetworkActions {
 
 const generateId = () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 
-const generateFibers = (count: number, startNumber: number = 1): Fiber[] => {
+const generateFibers = (count: number, startNumber: number = 1, fibersPerTube: number = 12): Fiber[] => {
+  const safeFibersPerTube = Math.max(1, fibersPerTube);
   return Array.from({ length: count }, (_, i) => {
     const fiberNum = startNumber + i;
     const colorIndex = (fiberNum - 1) % 12;
-    const tubeNumber = Math.floor((fiberNum - 1) / 12) + 1;
+    const localIndex = i;
+    const tubeNumber = Math.floor(localIndex / safeFibersPerTube) + 1;
     
     return {
       id: generateId(),
@@ -331,8 +343,9 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       id: generateId(),
       name,
       description,
-      boxes: [],
-      cables: [],
+    boxes: [],
+    reserves: [],
+    cables: [],
       fusions: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -393,7 +406,10 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
           boxes: prev.currentNetwork.boxes.filter(box => box.id !== boxId),
           cables: prev.currentNetwork.cables.filter(
             cable => cable.startPoint !== boxId && cable.endPoint !== boxId
-          ),
+          ).map((cable) => ({
+            ...cable,
+            attachments: (cable.attachments || []).filter((attachment) => !(attachment.kind === 'box' && attachment.entityId === boxId)),
+          })),
           fusions: prev.currentNetwork.fusions.filter(
             fusion => fusion.boxAId !== boxId && fusion.boxBId !== boxId
           ),
@@ -404,10 +420,18 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCable = useCallback((cableData: Omit<Cable, 'id' | 'fibers'>) => {
+    const fibersPerTube = Math.max(1, cableData.fibersPerTube || 12);
+    const looseTubeCount = Math.max(1, cableData.looseTubeCount || Math.ceil(cableData.fiberCount / fibersPerTube));
+    const maxCapacity = looseTubeCount * fibersPerTube;
+    const normalizedFiberCount = Math.min(Math.max(1, cableData.fiberCount), maxCapacity);
     const cable: Cable = {
       ...cableData,
+      fiberCount: normalizedFiberCount,
+      fibersPerTube,
+      looseTubeCount,
+      model: cableData.model || 'AS-80',
       id: generateId(),
-      fibers: generateFibers(cableData.fiberCount),
+      fibers: generateFibers(normalizedFiberCount, 1, fibersPerTube),
     };
 
     setState(prev => {
@@ -441,6 +465,29 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const updateCable = useCallback((cableId: string, updates: Partial<Cable>) => {
     setState(prev => {
       if (!prev.currentNetwork) return prev;
+      const currentCable = prev.currentNetwork.cables.find((cable) => cable.id === cableId);
+      if (!currentCable) return prev;
+      const nextCable = { ...currentCable, ...updates };
+      const endpointChanged =
+        currentCable.startPoint !== nextCable.startPoint ||
+        currentCable.endPoint !== nextCable.endPoint;
+
+      const updatedBoxes = endpointChanged
+        ? prev.currentNetwork.boxes.map((box) => {
+            const nextOutput = box.outputCables.filter((id) => id !== cableId);
+            const nextInput = box.inputCables.filter((id) => id !== cableId);
+
+            if (box.id === nextCable.startPoint && !nextOutput.includes(cableId)) {
+              nextOutput.push(cableId);
+            }
+            if (box.id === nextCable.endPoint && !nextInput.includes(cableId)) {
+              nextInput.push(cableId);
+            }
+
+            return { ...box, outputCables: nextOutput, inputCables: nextInput };
+          })
+        : prev.currentNetwork.boxes;
+
       return {
         ...prev,
         currentNetwork: {
@@ -448,6 +495,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
           cables: prev.currentNetwork.cables.map(cable =>
             cable.id === cableId ? { ...cable, ...updates } : cable
           ),
+          boxes: updatedBoxes,
           updatedAt: new Date().toISOString(),
         },
       };
@@ -486,6 +534,62 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         ...prev,
         currentNetwork: {
           ...cleanedNetwork,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
+  const addReserve = useCallback((reserveData: Omit<ReservePoint, 'id'>) => {
+    const reserve: ReservePoint = {
+      ...reserveData,
+      id: generateId(),
+    };
+
+    setState(prev => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          reserves: [...(prev.currentNetwork.reserves || []), reserve],
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    return reserve;
+  }, []);
+
+  const updateReserve = useCallback((reserveId: string, updates: Partial<ReservePoint>) => {
+    setState(prev => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          reserves: (prev.currentNetwork.reserves || []).map((reserve) =>
+            reserve.id === reserveId ? { ...reserve, ...updates } : reserve
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
+  const removeReserve = useCallback((reserveId: string) => {
+    setState(prev => {
+      if (!prev.currentNetwork) return prev;
+
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          reserves: (prev.currentNetwork.reserves || []).filter((reserve) => reserve.id !== reserveId),
+          cables: prev.currentNetwork.cables.map((cable) => ({
+            ...cable,
+            attachments: (cable.attachments || []).filter((attachment) => !(attachment.kind === 'reserve' && attachment.entityId === reserveId)),
+          })),
           updatedAt: new Date().toISOString(),
         },
       };
@@ -570,7 +674,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       boxId: string,
       endpointAId: string,
       endpointBId: string,
-      fusionType: Fusion['fusionType'] = 'connector'
+      fusionType: Fusion['fusionType'] = 'connector',
+      noLoss: boolean = false
     ) => {
       const currentNetwork = state.currentNetwork;
       if (!currentNetwork) return null;
@@ -605,7 +710,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         boxBId: boxId,
         position: box.position,
         fusionType,
-        attenuation: fusionType === 'connector' ? 0.2 : 0.1,
+        attenuation: noLoss ? 0 : fusionType === 'connector' ? 0.2 : 0.1,
       });
     },
     [state.currentNetwork, addFusion]
@@ -823,7 +928,28 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
 
   const importNetwork = useCallback((networkData: string) => {
     try {
-      const network = JSON.parse(networkData) as Network;
+      const networkRaw = JSON.parse(networkData) as Network;
+      const network: Network = {
+        ...networkRaw,
+        reserves: networkRaw.reserves || [],
+        cables: (networkRaw.cables || []).map((cable) => {
+          const fibersPerTube = Math.max(1, (cable as Partial<Cable>).fibersPerTube || 12);
+          const looseTubeCount = Math.max(1, (cable as Partial<Cable>).looseTubeCount || Math.ceil(cable.fiberCount / fibersPerTube));
+          const model = (cable as Partial<Cable>).model || 'AS-80';
+          const normalizedFibers = (cable.fibers || []).map((fiber, index) => ({
+            ...fiber,
+            tubeNumber: (fiber as Fiber & { tubeNumber?: number }).tubeNumber || Math.floor(index / fibersPerTube) + 1,
+          }));
+          return {
+            ...cable,
+            model,
+            fibersPerTube,
+            looseTubeCount,
+            fibers: normalizedFibers,
+            attachments: cable.attachments || [],
+          };
+        }),
+      };
       setState(prev => ({ ...prev, currentNetwork: network }));
       return true;
     } catch {
@@ -862,6 +988,9 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     addCable,
     updateCable,
     removeCable,
+    addReserve,
+    updateReserve,
+    removeReserve,
     addFusion,
     removeFusion,
     connectFibers,

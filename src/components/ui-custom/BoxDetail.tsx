@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Activity, Link2, Unlink, Zap, Save, Trash2, User, MapPin, Calendar, Settings, CheckCircle2, XCircle, Edit3, Plus, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
-import type { Fiber, Box, Splitter } from '@/types/ftth';
+import { CABLE_MODEL_OPTIONS, type Fiber, type Box, type Splitter } from '@/types/ftth';
 import { FusionBoardCanvas } from './box-detail/FusionBoardCanvas';
 import type { DragState, EndpointOption, EntityPosition } from './box-detail/types';
 
@@ -38,7 +38,7 @@ interface BoxContinuityResult {
 interface BoxCableFiberItem {
   cableId: string;
   cableName: string;
-  direction: 'Entrada' | 'Saida';
+  direction: 'Entrada' | 'Saida' | 'Passagem';
   fiber: Fiber;
 }
 
@@ -47,6 +47,11 @@ const GPON_FUSION_LOSS_DB = 0.1;
 const GPON_MECHANICAL_LOSS_DB = 0.2;
 const GPON_CONNECTOR_LOSS_DB = 0.2;
 const isFusionEntityId = (entityId: string) => entityId.startsWith('cable:') || entityId.startsWith('splitter:');
+const getCableDirectionForBox = (cable: { startPoint: string; endPoint: string }, boxId: string): 'Entrada' | 'Saida' | 'Passagem' => {
+  if (cable.startPoint === boxId) return 'Saida';
+  if (cable.endPoint === boxId) return 'Entrada';
+  return 'Passagem';
+};
 
 export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const {
@@ -54,6 +59,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     updateBox,
     removeBox,
     addCable,
+    updateCable,
     removeCable,
     connectFibers,
     connectBoxEndpoints,
@@ -68,7 +74,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const currentBox = currentNetwork?.boxes.find((b) => b.id === box.id) || box;
   const connectedBoxes = currentNetwork?.boxes.filter((b) => b.id !== currentBox.id) || [];
   const relatedCables = (currentNetwork?.cables || []).filter(
-    (cable) => cable.startPoint === currentBox.id || cable.endPoint === currentBox.id
+    (cable) =>
+      cable.startPoint === currentBox.id ||
+      cable.endPoint === currentBox.id ||
+      (cable.attachments || []).some((attachment) => attachment.kind === 'box' && attachment.entityId === currentBox.id)
   );
 
   const [selectedFiber, setSelectedFiber] = useState<Fiber | null>(null);
@@ -100,10 +109,18 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const [boxStatus, setBoxStatus] = useState(currentBox.status);
   const [continuityTestResult, setContinuityTestResult] = useState<BoxContinuityResult | null>(null);
   const [showAddCableDialog, setShowAddCableDialog] = useState(false);
+  const [newCableName, setNewCableName] = useState('');
   const [newCableTargetBox, setNewCableTargetBox] = useState('');
   const [newCableFiberCount, setNewCableFiberCount] = useState(12);
   const [newCableType, setNewCableType] = useState<'drop' | 'distribution' | 'feeder' | 'backbone'>('distribution');
+  const [newCableModel, setNewCableModel] = useState('AS-80');
+  const [newCableLooseTubeCount, setNewCableLooseTubeCount] = useState(1);
+  const [newCableFibersPerTube, setNewCableFibersPerTube] = useState(12);
+  const [selectedLooseCableId, setSelectedLooseCableId] = useState('');
   const layoutInitKeyRef = useRef<string>('');
+
+  const maxNewCableFiberCapacity = Math.max(1, newCableLooseTubeCount * newCableFibersPerTube);
+  const availableNewCableModels = CABLE_MODEL_OPTIONS.filter((model) => model.category === newCableType);
 
   const localConnections = useMemo(
     () => (currentBox.fusions || []).filter((fusion) => fusion.boxAId === currentBox.id && fusion.boxBId === currentBox.id),
@@ -121,7 +138,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const boxCableFibers = useMemo(() => {
     const items: BoxCableFiberItem[] = [];
     relatedCables.forEach((cable) => {
-      const direction: 'Entrada' | 'Saida' = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
+      const direction = getCableDirectionForBox(cable, currentBox.id);
       cable.fibers.forEach((fiber) => {
         items.push({
           cableId: cable.id,
@@ -138,7 +155,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     const options: EndpointOption[] = [];
 
     relatedCables.forEach((cable) => {
-      const direction = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
+      const direction = getCableDirectionForBox(cable, currentBox.id);
       cable.fibers.forEach((fiber) => {
         options.push({
           id: fiber.id,
@@ -201,7 +218,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     const entities: Array<{ id: string; label: string; type: 'cable' | 'splitter' }> = [];
 
     relatedCables.forEach((cable) => {
-      const direction = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
+      const direction = getCableDirectionForBox(cable, currentBox.id);
       entities.push({
         id: `cable:${cable.id}`,
         label: `${cable.name} (${direction})`,
@@ -236,6 +253,22 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       .filter((test) => (test.observations || '').includes(marker))
       .sort((a, b) => new Date(b.testedAt).getTime() - new Date(a.testedAt).getTime());
   }, [continuityTests, currentBox.id]);
+
+  const looseCables = useMemo(
+    () =>
+      (currentNetwork?.cables || []).filter(
+        (cable) =>
+          (cable.startPoint === '' || cable.endPoint === '') &&
+          cable.startPoint !== currentBox.id &&
+          cable.endPoint !== currentBox.id
+      ),
+    [currentNetwork?.cables, currentBox.id]
+  );
+
+  const selectedLooseCable = useMemo(
+    () => looseCables.find((cable) => cable.id === selectedLooseCableId) || null,
+    [looseCables, selectedLooseCableId]
+  );
 
   const fusionBoardSceneSize = useMemo(() => {
     const positions = Object.values(entityPositions);
@@ -303,9 +336,17 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       const routeMeters = (cableA?.length || 0) + (cableB?.length || 0);
 
       const fiberDb = (routeMeters / 1000) * GPON_FIBER_LOSS_DB_PER_KM;
-      const fusionDb = fusion.fusionType === 'fusion' ? GPON_FUSION_LOSS_DB : 0;
-      const mechanicalDb = fusion.fusionType === 'mechanical' ? GPON_MECHANICAL_LOSS_DB : 0;
-      const connectorDb = fusion.fusionType === 'connector' ? GPON_CONNECTOR_LOSS_DB : 0;
+      const fusionDb = typeof fusion.attenuation === 'number'
+        ? fusion.attenuation
+        : fusion.fusionType === 'fusion'
+          ? GPON_FUSION_LOSS_DB
+          : fusion.fusionType === 'mechanical'
+            ? GPON_MECHANICAL_LOSS_DB
+            : fusion.fusionType === 'connector'
+              ? GPON_CONNECTOR_LOSS_DB
+              : 0;
+      const mechanicalDb = 0;
+      const connectorDb = 0;
 
       const entityA = fiberToEntity[fusion.fiberAId];
       const entityB = fiberToEntity[fusion.fiberBId];
@@ -321,6 +362,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
         fiberA: endpointA?.label || fusion.fiberAId,
         fiberB: endpointB?.label || fusion.fiberBId,
         fusionType: fusion.fusionType,
+        isNoLoss: fusionDb === 0,
         routeMeters,
         fiberDb,
         fusionDb,
@@ -382,6 +424,19 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
 
     setEntityPositions(next);
   }, [open, currentBox.id, entityLayoutKey, entityOptions, currentBox.fusionLayout]);
+
+  useEffect(() => {
+    if (availableNewCableModels.length === 0) return;
+    if (!availableNewCableModels.some((model) => model.id === newCableModel)) {
+      setNewCableModel(availableNewCableModels[0]!.id);
+    }
+  }, [availableNewCableModels, newCableModel]);
+
+  useEffect(() => {
+    if (newCableFiberCount > maxNewCableFiberCapacity) {
+      setNewCableFiberCount(maxNewCableFiberCapacity);
+    }
+  }, [newCableFiberCount, maxNewCableFiberCapacity]);
 
   useEffect(() => {
     entityPositionsRef.current = entityPositions;
@@ -583,6 +638,21 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     setLayoutTick((value) => value + 1);
   };
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    // Zoom uses CSS transform; force a post-layout resync so connectors stay aligned.
+    const rafA = requestAnimationFrame(() => {
+      setLayoutTick((value) => value + 1);
+    });
+    const rafB = requestAnimationFrame(() => {
+      setLayoutTick((value) => value + 1);
+    });
+    return () => {
+      cancelAnimationFrame(rafA);
+      cancelAnimationFrame(rafB);
+    };
+  }, [fusionBoardZoom, open]);
+
   const handleZoomInFusionBoard = () => {
     setFusionBoardZoom((value) => Math.min(2, Number((value + 0.1).toFixed(2))));
   };
@@ -607,6 +677,75 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     }
   };
 
+  const handleAttachLooseCableToCurrentBox = () => {
+    if (!selectedLooseCable) return;
+
+    if (!selectedLooseCable.startPoint) {
+      updateCable(selectedLooseCable.id, { startPoint: currentBox.id });
+      setSelectedLooseCableId('');
+      return;
+    }
+
+    if (!selectedLooseCable.endPoint) {
+      updateCable(selectedLooseCable.id, { endPoint: currentBox.id });
+      setSelectedLooseCableId('');
+    }
+  };
+
+  const extractFiberNumber = (endpoint: EndpointOption) => {
+    const match = endpoint.label.match(/(\d+)/);
+    return match ? Number.parseInt(match[1]!, 10) : Number.POSITIVE_INFINITY;
+  };
+
+  const getEndpointDirection = (endpoint: EndpointOption): 'Entrada' | 'Saida' | 'Passagem' | 'Outro' => {
+    const match = endpoint.group.match(/\((Entrada|Saida|Passagem)\)$/);
+    return (match?.[1] as 'Entrada' | 'Saida' | 'Passagem' | undefined) || 'Outro';
+  };
+
+  const handleCreateNoLossBulkFusions = () => {
+    const freeCableEndpoints = fusionEndpointOptions.filter((endpoint) => {
+      if (!endpoint.entityId.startsWith('cable:')) return false;
+      if (endpoint.fusionId) return false;
+      if (endpoint.status === 'faulty') return false;
+      return true;
+    });
+
+    const inputs = freeCableEndpoints
+      .filter((endpoint) => getEndpointDirection(endpoint) === 'Entrada')
+      .sort((a, b) => extractFiberNumber(a) - extractFiberNumber(b));
+    const outputs = freeCableEndpoints
+      .filter((endpoint) => getEndpointDirection(endpoint) === 'Saida')
+      .sort((a, b) => extractFiberNumber(a) - extractFiberNumber(b));
+
+    if (inputs.length === 0 || outputs.length === 0) return;
+
+    const outputByNumber = outputs.reduce<Record<number, EndpointOption[]>>((acc, endpoint) => {
+      const fiberNumber = extractFiberNumber(endpoint);
+      if (!Number.isFinite(fiberNumber)) return acc;
+      if (!acc[fiberNumber]) acc[fiberNumber] = [];
+      acc[fiberNumber]!.push(endpoint);
+      return acc;
+    }, {});
+
+    let created = 0;
+    inputs.forEach((inputEndpoint) => {
+      const fiberNumber = extractFiberNumber(inputEndpoint);
+      if (!Number.isFinite(fiberNumber)) return;
+      const candidates = outputByNumber[fiberNumber];
+      if (!candidates || candidates.length === 0) return;
+      const candidateIndex = candidates.findIndex((candidate) => candidate.entityId !== inputEndpoint.entityId);
+      if (candidateIndex < 0) return;
+      const selected = candidates.splice(candidateIndex, 1)[0];
+      if (!selected) return;
+      const result = connectBoxEndpoints(currentBox.id, inputEndpoint.id, selected.id, 'fusion', true);
+      if (result) created += 1;
+    });
+
+    if (created > 0) {
+      setLayoutTick((value) => value + 1);
+    }
+  };
+
   const calculateDistanceMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
     const R = 6371000;
     const dLat = ((b.lat - a.lat) * Math.PI) / 180;
@@ -626,9 +765,12 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     if (!targetBox) return;
 
     addCable({
-      name: `Cabo ${currentBox.name} -> ${targetBox.name}`,
+      name: newCableName.trim() || `Cabo ${currentBox.name} -> ${targetBox.name}`,
       type: newCableType,
+      model: newCableModel,
       fiberCount: newCableFiberCount,
+      looseTubeCount: newCableLooseTubeCount,
+      fibersPerTube: newCableFibersPerTube,
       startPoint: currentBox.id,
       endPoint: targetBox.id,
       path: [],
@@ -638,9 +780,13 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     });
 
     setShowAddCableDialog(false);
+    setNewCableName('');
     setNewCableTargetBox('');
     setNewCableFiberCount(12);
     setNewCableType('distribution');
+    setNewCableModel('AS-80');
+    setNewCableLooseTubeCount(1);
+    setNewCableFibersPerTube(12);
   };
 
   const handleUndoLastFusion = () => {
@@ -956,6 +1102,45 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
               </div>
             </div>
 
+            <div className="grid grid-cols-3 gap-3 items-end">
+              <div className="col-span-2">
+                <Label>Vincular Cabo Livre a Esta Caixa</Label>
+                <Select value={selectedLooseCableId} onValueChange={setSelectedLooseCableId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={looseCables.length === 0 ? 'Nenhum cabo livre disponivel' : 'Selecione um cabo livre'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {looseCables.map((cable) => (
+                      <SelectItem key={cable.id} value={cable.id}>
+                        {cable.name} {cable.startPoint ? '(falta destino)' : cable.endPoint ? '(falta origem)' : '(sem origem e destino)'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-1">
+                <Button className="w-full" variant="outline" onClick={handleAttachLooseCableToCurrentBox} disabled={!selectedLooseCableId}>
+                  Vincular
+                </Button>
+              </div>
+              {selectedLooseCable && (
+                <div className="col-span-3 text-xs text-gray-500">
+                  Este vinculo vai preencher {selectedLooseCable.startPoint ? 'o destino' : 'a origem'} do cabo selecionado com a caixa atual.
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 items-end">
+              <div className="col-span-2 text-xs text-gray-500 border rounded-md px-3 py-2 bg-gray-50">
+                Cria fusoes em massa (Entrada x Saida, mesma numeracao de fibra) com 0 dB. Para usar uma fibra depois, clique no x para desfazer e refaca a fusao normal.
+              </div>
+              <div className="col-span-1">
+                <Button className="w-full" variant="outline" onClick={handleCreateNoLossBulkFusions}>
+                  Todas sem perda
+                </Button>
+              </div>
+            </div>
+
             <FusionBoardCanvas
               isFullscreen={isFullscreen}
               entityOptions={entityOptions}
@@ -1109,7 +1294,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                             <tr key={row.id} className="border-t">
                               <td className="p-2">{row.fiberA}</td>
                               <td className="p-2">{row.fiberB}</td>
-                              <td className="p-2 uppercase">{row.fusionType}</td>
+                              <td className="p-2 uppercase">{row.fusionType}{row.isNoLoss ? ' (DIRETO)' : ''}</td>
                               <td className="p-2 text-right">{Math.round(row.routeMeters)} m</td>
                               <td className="p-2 text-right">{row.fiberDb.toFixed(2)} dB</td>
                               <td className="p-2 text-right font-semibold">{row.estimatedLossDb.toFixed(2)} dB</td>
@@ -1215,6 +1400,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
               )}
 
               <div>
+                <Label>Nome do Cabo</Label>
+                <Input value={newCableName} onChange={(e) => setNewCableName(e.target.value)} placeholder={`Ex: ${newCableModel} ${currentBox.name} -> destino`} />
+              </div>
+              <div>
                 <Label>Caixa de Destino</Label>
                 <Select value={fusionTargetBox} onValueChange={setFusionTargetBox}>
                   <SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger>
@@ -1247,62 +1436,97 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
         </Dialog>
 
         <Dialog open={showAddCableDialog} onOpenChange={setShowAddCableDialog}>
-          <DialogContent className="max-w-md">
+          <DialogContent className="w-[min(96vw,720px)] max-w-[720px] max-h-[90vh] overflow-hidden p-0">
             <DialogHeader>
-              <DialogTitle>Adicionar Cabo</DialogTitle>
+              <DialogTitle className="px-6 pt-6">Adicionar Cabo</DialogTitle>
             </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label>Caixa de Destino</Label>
-                <Select value={newCableTargetBox} onValueChange={setNewCableTargetBox}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {connectedBoxes.map((b) => (
-                      <SelectItem key={b.id} value={b.id}>
-                        {b.name} ({b.type})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <ScrollArea className="max-h-[calc(90vh-150px)] px-6 pb-4">
+              <div className="space-y-4">
+                <div>
+                  <Label>Nome do Cabo</Label>
+                  <Input value={newCableName} onChange={(e) => setNewCableName(e.target.value)} placeholder={`Ex: ${newCableModel} ${currentBox.name} -> destino`} />
+                </div>
+                <div>
+                  <Label>Caixa de Destino</Label>
+                  <Select value={newCableTargetBox} onValueChange={setNewCableTargetBox}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {connectedBoxes.map((b) => (
+                        <SelectItem key={b.id} value={b.id}>
+                          {b.name} ({b.type})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Tipo de Cabo</Label>
+                  <Select value={newCableType} onValueChange={(v: 'drop' | 'distribution' | 'feeder' | 'backbone') => setNewCableType(v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="drop">Drop</SelectItem>
+                      <SelectItem value="distribution">Distribuicao</SelectItem>
+                      <SelectItem value="feeder">Feeder</SelectItem>
+                      <SelectItem value="backbone">Backbone</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Modelo do Cabo</Label>
+                  <Select value={newCableModel} onValueChange={setNewCableModel}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableNewCableModels.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Tubos loose</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={newCableLooseTubeCount}
+                      onChange={(e) => setNewCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                    />
+                  </div>
+                  <div>
+                    <Label>Fibras por tubo</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={newCableFibersPerTube}
+                      onChange={(e) => setNewCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label>Quantidade de Fibras</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={maxNewCableFiberCapacity}
+                    value={newCableFiberCount}
+                    onChange={(e) => {
+                      const next = Math.max(1, Number.parseInt(e.target.value || '1', 10));
+                      setNewCableFiberCount(Math.min(maxNewCableFiberCapacity, next));
+                    }}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Capacidade atual: {maxNewCableFiberCapacity} fibras ({newCableLooseTubeCount} x {newCableFibersPerTube}).</p>
+                </div>
               </div>
-              <div>
-                <Label>Tipo de Cabo</Label>
-                <Select value={newCableType} onValueChange={(v: 'drop' | 'distribution' | 'feeder' | 'backbone') => setNewCableType(v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="drop">Drop</SelectItem>
-                    <SelectItem value="distribution">Distribuicao</SelectItem>
-                    <SelectItem value="feeder">Feeder</SelectItem>
-                    <SelectItem value="backbone">Backbone</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Quantidade de Fibras</Label>
-                <Select value={newCableFiberCount.toString()} onValueChange={(v) => setNewCableFiberCount(Number.parseInt(v, 10))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">1</SelectItem>
-                    <SelectItem value="2">2</SelectItem>
-                    <SelectItem value="4">4</SelectItem>
-                    <SelectItem value="6">6</SelectItem>
-                    <SelectItem value="8">8</SelectItem>
-                    <SelectItem value="12">12</SelectItem>
-                    <SelectItem value="24">24</SelectItem>
-                    <SelectItem value="36">36</SelectItem>
-                    <SelectItem value="48">48</SelectItem>
-                    <SelectItem value="72">72</SelectItem>
-                    <SelectItem value="96">96</SelectItem>
-                    <SelectItem value="144">144</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            </ScrollArea>
+            <div className="border-t px-6 py-4 bg-white">
               <div className="flex gap-2">
                 <Button className="flex-1" onClick={handleAddCableFromFusionBoard} disabled={!newCableTargetBox}>
                   Confirmar

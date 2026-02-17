@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -20,7 +20,7 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react';
-import type { Cable, Fiber } from '@/types/ftth';
+import { CABLE_MODEL_OPTIONS, type Cable, type Fiber } from '@/types/ftth';
 
 interface CableDetailProps {
   cable: Cable;
@@ -41,10 +41,54 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
   const [editingCable, setEditingCable] = useState(false);
   const [cableName, setCableName] = useState(cable.name);
   const [cableStatus, setCableStatus] = useState(cable.status);
+  const [cableModel, setCableModel] = useState(cable.model || 'AS-80');
+  const [cableLooseTubeCount, setCableLooseTubeCount] = useState(cable.looseTubeCount || 1);
+  const [cableFibersPerTube, setCableFibersPerTube] = useState(cable.fibersPerTube || 12);
+  const [cableStartBoxId, setCableStartBoxId] = useState(cable.startPoint || '');
+  const [cableEndBoxId, setCableEndBoxId] = useState(cable.endPoint || '');
   const [testResults, setTestResults] = useState<Map<string, 'pass' | 'fail'>>(new Map());
+  const currentCable = currentNetwork?.cables.find((item: any) => item.id === cable.id) || cable;
 
-  const startBox = currentNetwork?.boxes.find((b: any) => b.id === cable.startPoint);
-  const endBox = currentNetwork?.boxes.find((b: any) => b.id === cable.endPoint);
+  const startBox = currentNetwork?.boxes.find((b: any) => b.id === currentCable.startPoint);
+  const endBox = currentNetwork?.boxes.find((b: any) => b.id === currentCable.endPoint);
+  const availableModels = CABLE_MODEL_OPTIONS.filter((item) => item.category === currentCable.type);
+  const maxFiberCapacity = Math.max(1, cableLooseTubeCount * cableFibersPerTube);
+
+  useEffect(() => {
+    if (!open) return;
+    setCableName(cable.name);
+    setCableStatus(cable.status);
+    setCableModel(cable.model || 'AS-80');
+    setCableLooseTubeCount(cable.looseTubeCount || 1);
+    setCableFibersPerTube(cable.fibersPerTube || 12);
+    setCableStartBoxId(cable.startPoint || '');
+    setCableEndBoxId(cable.endPoint || '');
+  }, [open, cable.id, cable.name, cable.status, cable.model, cable.looseTubeCount, cable.fibersPerTube, cable.startPoint, cable.endPoint]);
+
+  const calculateCableLength = (waypoints: Array<{ lat: number; lng: number }>, start?: { lat: number; lng: number }, end?: { lat: number; lng: number }) => {
+    const points = [
+      ...(start ? [start] : []),
+      ...waypoints,
+      ...(end ? [end] : []),
+    ];
+    if (points.length < 2) return 0;
+    let length = 0;
+
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const R = 6371000;
+      const dLat = (curr.lat - prev.lat) * Math.PI / 180;
+      const dLon = (curr.lng - prev.lng) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(prev.lat * Math.PI / 180) * Math.cos(curr.lat * Math.PI / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      length += R * c;
+    }
+
+    return Math.round(length);
+  };
 
   const getFiberStatus = (fiber: Fiber) => {
     if (fiber.status === 'active') return { color: 'bg-green-500', label: 'Ativa' };
@@ -54,9 +98,27 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
   };
 
   const handleSaveCable = () => {
+    const nextStartBox = cableStartBoxId ? currentNetwork?.boxes.find((b: any) => b.id === cableStartBoxId) : null;
+    const nextEndBox = cableEndBoxId ? currentNetwork?.boxes.find((b: any) => b.id === cableEndBoxId) : null;
+    const safeFibersPerTube = Math.max(1, cableFibersPerTube);
+    const safeLooseTubeCount = Math.max(1, cableLooseTubeCount);
+    const normalizedFiberCount = Math.min(Math.max(1, currentCable.fiberCount), safeLooseTubeCount * safeFibersPerTube);
+    const normalizedFibers = currentCable.fibers.slice(0, normalizedFiberCount).map((fiber, index) => ({
+      ...fiber,
+      tubeNumber: Math.floor(index / safeFibersPerTube) + 1,
+    }));
+
     updateCable(cable.id, {
       name: cableName,
       status: cableStatus as any,
+      model: cableModel,
+      looseTubeCount: safeLooseTubeCount,
+      fibersPerTube: safeFibersPerTube,
+      fiberCount: normalizedFiberCount,
+      fibers: normalizedFibers,
+      startPoint: cableStartBoxId || '',
+      endPoint: cableEndBoxId || '',
+      length: calculateCableLength(currentCable.path || [], nextStartBox?.position, nextEndBox?.position),
     });
     setEditingCable(false);
   };
@@ -266,8 +328,8 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
                     A
                   </div>
                   <div>
-                    <div className="font-medium">{startBox?.name}</div>
-                    <div className="text-xs text-gray-500">{startBox?.type}</div>
+                    <div className="font-medium">{startBox?.name || 'Nao definida'}</div>
+                    <div className="text-xs text-gray-500">{startBox?.type || 'Livre'}</div>
                   </div>
                 </div>
                 
@@ -282,8 +344,8 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
                     B
                   </div>
                   <div>
-                    <div className="font-medium">{endBox?.name}</div>
-                    <div className="text-xs text-gray-500">{endBox?.type}</div>
+                    <div className="font-medium">{endBox?.name || 'Nao definido'}</div>
+                    <div className="text-xs text-gray-500">{endBox?.type || 'Livre'}</div>
                   </div>
                 </div>
               </div>
@@ -336,6 +398,18 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
                     <p className="font-medium">{cable.fiberCount}</p>
                   </div>
                   <div>
+                    <Label className="text-gray-500">Modelo</Label>
+                    <p className="font-medium">{currentCable.model || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <Label className="text-gray-500">Tubos loose</Label>
+                    <p className="font-medium">{currentCable.looseTubeCount || 1}</p>
+                  </div>
+                  <div>
+                    <Label className="text-gray-500">Fibras por tubo</Label>
+                    <p className="font-medium">{currentCable.fibersPerTube || 12}</p>
+                  </div>
+                  <div>
                     <Label className="text-gray-500">Comprimento</Label>
                     <p className="font-medium flex items-center gap-2">
                       <Ruler className="w-4 h-4" />
@@ -359,11 +433,11 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
                   )}
                   <div className="col-span-2">
                     <Label className="text-gray-500">Origem</Label>
-                    <p className="font-medium">{startBox?.name} ({startBox?.type})</p>
+                    <p className="font-medium">{startBox ? `${startBox.name} (${startBox.type})` : 'Nao definida'}</p>
                   </div>
                   <div className="col-span-2">
                     <Label className="text-gray-500">Destino</Label>
-                    <p className="font-medium">{endBox?.name} ({endBox?.type})</p>
+                    <p className="font-medium">{endBox ? `${endBox.name} (${endBox.type})` : 'Nao definido'}</p>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -399,6 +473,78 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
                       <SelectItem value="inactive">Inativo</SelectItem>
                       <SelectItem value="maintenance">Manutenção</SelectItem>
                       <SelectItem value="projected">Projetado</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Modelo do Cabo</Label>
+                  <Select value={cableModel} onValueChange={setCableModel}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableModels.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Tubos loose</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={cableLooseTubeCount}
+                      onChange={(e) => setCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                    />
+                  </div>
+                  <div>
+                    <Label>Fibras por tubo</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={cableFibersPerTube}
+                      onChange={(e) => setCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">Capacidade: {maxFiberCapacity} fibras. Fibras atuais: {currentCable.fiberCount}.</p>
+                <div>
+                  <Label>Caixa de Origem</Label>
+                  <Select value={cableStartBoxId || '__none__'} onValueChange={(v) => setCableStartBoxId(v === '__none__' ? '' : v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">Sem origem</SelectItem>
+                      {(currentNetwork?.boxes || [])
+                        .filter((box: any) => box.id !== cableEndBoxId)
+                        .map((box: any) => (
+                          <SelectItem key={box.id} value={box.id}>
+                            {box.name} ({box.type})
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Caixa de Destino</Label>
+                  <Select value={cableEndBoxId || '__none__'} onValueChange={(v) => setCableEndBoxId(v === '__none__' ? '' : v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">Sem destino</SelectItem>
+                      {(currentNetwork?.boxes || [])
+                        .filter((box: any) => box.id !== cableStartBoxId)
+                        .map((box: any) => (
+                          <SelectItem key={box.id} value={box.id}>
+                            {box.name} ({box.type})
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>

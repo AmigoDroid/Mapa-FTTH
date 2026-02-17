@@ -46,7 +46,10 @@ export interface Cable {
   id: string;
   name: string;
   type: 'drop' | 'distribution' | 'feeder' | 'backbone';
+  model: string;
   fiberCount: number;
+  looseTubeCount: number;
+  fibersPerTube: number;
   fibers: Fiber[];
   startPoint: string;
   endPoint: string;
@@ -57,6 +60,24 @@ export interface Cable {
   diameter?: number;
   installationDate?: string;
   observations?: string;
+  attachments?: CableAttachment[];
+}
+
+export interface CableAttachment {
+  id: string;
+  kind: 'box' | 'reserve';
+  entityId: string;
+  name: string;
+  position: Position;
+  pathIndex: number;
+}
+
+export interface ReservePoint {
+  id: string;
+  name: string;
+  position: Position;
+  status: 'active' | 'inactive';
+  notes?: string;
 }
 
 export interface Splitter {
@@ -95,6 +116,7 @@ export interface Network {
   name: string;
   description?: string;
   boxes: Box[];
+  reserves: ReservePoint[];
   cables: Cable[];
   fusions: Fusion[];
   createdAt: string;
@@ -153,6 +175,25 @@ export const CABLE_COLORS = [
   { name: 'Laranja', hex: '#FF6600', type: 'feeder' },
   { name: 'Marrom', hex: '#8B4513', type: 'drop' },
   { name: 'Cinza', hex: '#808080', type: 'generic' },
+];
+
+export interface CableModelOption {
+  id: string;
+  label: string;
+  category: Cable['type'];
+}
+
+export const CABLE_MODEL_OPTIONS: CableModelOption[] = [
+  { id: 'AS-80', label: 'AS-80', category: 'distribution' },
+  { id: 'AS-120', label: 'AS-120', category: 'distribution' },
+  { id: 'AS-80S', label: 'AS-80S', category: 'feeder' },
+  { id: 'AS-120S', label: 'AS-120S', category: 'feeder' },
+  { id: 'ADSS-80', label: 'ADSS-80', category: 'backbone' },
+  { id: 'ADSS-120', label: 'ADSS-120', category: 'backbone' },
+  { id: 'ADSS-200', label: 'ADSS-200', category: 'backbone' },
+  { id: 'DROP-FLAT', label: 'DROP-FLAT', category: 'drop' },
+  { id: 'DROP-ROUND', label: 'DROP-ROUND', category: 'drop' },
+  { id: 'MICRO-CABO', label: 'MICRO-CABO', category: 'distribution' },
 ];
 
 // Ícones para caixas

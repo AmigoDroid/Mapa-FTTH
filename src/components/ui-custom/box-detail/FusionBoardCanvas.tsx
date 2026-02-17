@@ -92,6 +92,7 @@ export function FusionBoardCanvas({
               if (!start || !end) return null;
               const lineColor = endpointById[fusion.fiberAId]?.colorHex || '#2563eb';
               const path = buildFlexiblePath(start.x, start.y, end.x, end.y);
+              const isNoLoss = fusion.attenuation === 0;
               return (
                 <path
                   key={`${fusion.id}-${layoutTick}`}
@@ -99,6 +100,7 @@ export function FusionBoardCanvas({
                   stroke={lineColor}
                   strokeWidth={3}
                   strokeOpacity={0.95}
+                  strokeDasharray={isNoLoss ? '4 4' : undefined}
                   fill="none"
                   strokeLinecap="round"
                 />
@@ -127,17 +129,23 @@ export function FusionBoardCanvas({
             if (!start || !end) return null;
             const midX = (start.x + end.x) / 2;
             const midY = (start.y + end.y) / 2;
+            const isNoLoss = fusion.attenuation === 0;
             return (
-              <button
-                key={`del-${fusion.id}-${layoutTick}`}
-                type="button"
-                className="absolute -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full border border-red-300 bg-white text-red-600 text-[10px] shadow"
-                style={{ left: `${midX}px`, top: `${midY}px` }}
-                title="Desfazer esta fusao"
-                onClick={() => onDisconnectFusion(fusion.id)}
-              >
-                x
-              </button>
+              <div key={`del-${fusion.id}-${layoutTick}`} className="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1" style={{ left: `${midX}px`, top: `${midY}px` }}>
+                {isNoLoss && (
+                  <span className="px-1.5 h-5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-700 text-[9px] leading-5 shadow-sm">
+                    Direto 0 dB
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="w-5 h-5 rounded-full border border-red-300 bg-white text-red-600 text-[10px] shadow"
+                  title={isNoLoss ? 'Desfazer fusao sem perda' : 'Desfazer esta fusao'}
+                  onClick={() => onDisconnectFusion(fusion.id)}
+                >
+                  x
+                </button>
+              </div>
             );
           })}
 

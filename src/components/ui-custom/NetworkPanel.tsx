@@ -333,8 +333,8 @@ export function NetworkPanel() {
                             </Badge>
                           </div>
                           <div className="text-xs text-gray-500 mt-1">
-                            <p>{startBox?.name} → {endBox?.name}</p>
-                            <p>{cable.fiberCount} fibras | {cable.length}m</p>
+                            <p>{startBox?.name || 'Sem origem'} {'->'} {endBox?.name || 'Sem destino'}</p>
+                            <p>{cable.model || 'AS-80'} | {cable.fiberCount} fibras | {cable.length}m</p>
                           </div>
                         </div>
                       );
