@@ -23,6 +23,7 @@ import {
   MapPin,
   Zap,
   Settings,
+  Building2,
   ChevronRight,
   ChevronDown
 } from 'lucide-react';
@@ -37,6 +38,7 @@ export function NetworkPanel() {
     importNetwork,
     resetNetwork,
     removeBox,
+    selectPop,
   } = useNetworkStore();
 
   const [showNewNetwork, setShowNewNetwork] = useState(false);
@@ -212,7 +214,7 @@ export function NetworkPanel() {
         </CardHeader>
         <CardContent className="flex-1 overflow-hidden">
           <Tabs defaultValue="boxes" className="h-full flex flex-col">
-            <TabsList className="grid w-full grid-cols-2">
+            <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="boxes">
                 <Box className="w-4 h-4 mr-1" />
                 Caixas
@@ -220,6 +222,10 @@ export function NetworkPanel() {
               <TabsTrigger value="cables">
                 <Route className="w-4 h-4 mr-1" />
                 Cabos
+              </TabsTrigger>
+              <TabsTrigger value="pops">
+                <Building2 className="w-4 h-4 mr-1" />
+                POPs
               </TabsTrigger>
             </TabsList>
 
@@ -335,6 +341,38 @@ export function NetworkPanel() {
                           <div className="text-xs text-gray-500 mt-1">
                             <p>{startBox?.name || 'Sem origem'} {'->'} {endBox?.name || 'Sem destino'}</p>
                             <p>{cable.model || 'AS-80'} | {cable.fiberCount} fibras | {cable.length}m</p>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="pops" className="flex-1 overflow-hidden">
+              <ScrollArea className="h-[calc(100vh-300px)]">
+                <div className="space-y-2">
+                  {(currentNetwork.pops || []).length === 0 ? (
+                    <div className="text-center text-gray-500 py-4">
+                      Nenhum POP cadastrado
+                    </div>
+                  ) : (
+                    (currentNetwork.pops || []).map((pop: any) => {
+                      const city = (currentNetwork.cities || []).find((c: any) => c.id === pop.cityId);
+                      return (
+                        <div
+                          key={pop.id}
+                          className="border rounded-lg p-3 bg-white cursor-pointer hover:bg-gray-50"
+                          onClick={() => selectPop(pop)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium text-sm">{pop.name}</span>
+                            <Badge variant="outline" className="text-xs">{pop.status}</Badge>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            <p>{city ? `${city.sigla} - ${city.name}` : 'Sem cidade'}</p>
+                            <p>DIO: {(pop.dios || []).length} | OLT: {(pop.olts || []).length} | Cabos: {(pop.cables || []).length}</p>
                           </div>
                         </div>
                       );

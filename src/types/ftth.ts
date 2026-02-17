@@ -7,6 +7,14 @@ export interface Position {
   lng: number;
 }
 
+export interface City {
+  id: string;
+  name: string;
+  sigla: string;
+  state?: string;
+  popIds: string[];
+}
+
 export interface FiberColor {
   number: number;
   name: string;
@@ -63,6 +71,112 @@ export interface Cable {
   attachments?: CableAttachment[];
 }
 
+export interface PopDio {
+  id: string;
+  name: string;
+  portCount: number;
+}
+
+export type OltType = 'compact' | 'chassi';
+
+export interface OltGbic {
+  id: string;
+  model: string;
+  connector: 'APC' | 'UPC' | 'APC-UPC';
+  txPowerDbm: number;
+}
+
+export interface OltPon {
+  id: string;
+  index: number;
+  active: boolean;
+  gbic: OltGbic;
+}
+
+export interface OltUplink {
+  id: string;
+  index: number;
+  active: boolean;
+  connector: 'RJ45' | 'SFP' | 'SFP+';
+  speed: '1G' | '10G';
+}
+
+export interface OltSlot {
+  id: string;
+  index: number;
+  pons: OltPon[];
+}
+
+export interface PopOlt {
+  id: string;
+  name: string;
+  type: OltType;
+  slots: OltSlot[];
+  uplinks: OltUplink[];
+}
+
+export interface PopSwitchPort {
+  id: string;
+  index: number;
+  active: boolean;
+}
+
+export interface PopSwitch {
+  id: string;
+  name: string;
+  portCount: number;
+  uplinkPortCount: number;
+  ports: PopSwitchPort[];
+  uplinks: PopSwitchPort[];
+}
+
+export interface PopRouterInterface {
+  id: string;
+  index: number;
+  active: boolean;
+  role: 'WAN' | 'LAN';
+}
+
+export interface PopRouter {
+  id: string;
+  name: string;
+  wanCount: number;
+  lanCount: number;
+  interfaces: PopRouterInterface[];
+}
+
+export interface PopCable {
+  id: string;
+  name: string;
+  type: 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc';
+  fiberCount: number;
+  fibers: Fiber[];
+  status: 'active' | 'inactive' | 'maintenance';
+}
+
+export interface PopFusion {
+  id: string;
+  endpointAId: string;
+  endpointBId: string;
+  fusionType: 'mechanical' | 'fusion' | 'connector';
+  attenuation: number;
+  dateCreated: string;
+}
+
+export interface Pop {
+  id: string;
+  cityId: string;
+  name: string;
+  position: Position;
+  status: 'active' | 'inactive' | 'maintenance' | 'projected';
+  dios: PopDio[];
+  olts: PopOlt[];
+  switches: PopSwitch[];
+  routers: PopRouter[];
+  cables: PopCable[];
+  fusions: PopFusion[];
+}
+
 export interface CableAttachment {
   id: string;
   kind: 'box' | 'reserve';
@@ -115,6 +229,8 @@ export interface Network {
   id: string;
   name: string;
   description?: string;
+  cities: City[];
+  pops: Pop[];
   boxes: Box[];
   reserves: ReservePoint[];
   cables: Cable[];

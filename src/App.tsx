@@ -5,6 +5,7 @@ import { NetworkPanel } from '@/components/ui-custom/NetworkPanel';
 import { FiberColorLegend } from '@/components/ui-custom/FiberColorLegend';
 import { ContinuityTester } from '@/components/ui-custom/ContinuityTester';
 import { BoxDetail } from '@/components/ui-custom/BoxDetail';
+import { PopDetail } from '@/components/ui-custom/PopDetail';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -38,7 +39,9 @@ function App() {
     currentNetwork, 
     createNetwork, 
     selectedBox,
+    selectedPop,
     selectBox,
+    selectPop,
   } = useNetworkStore();
 
   // Criar rede de exemplo na primeira execução
@@ -148,10 +151,14 @@ function App() {
                   <div className="w-3 h-3 bg-orange-500 rounded-full" />
                   <span>DIO: {currentNetwork.boxes.filter((b: {type: string}) => b.type === 'DIO').length}</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Route className="w-3 h-3 text-green-600" />
-                  <span>Cabos: {currentNetwork.cables.length}</span>
-                </div>
+              <div className="flex items-center gap-2">
+                <Route className="w-3 h-3 text-green-600" />
+                <span>Cabos: {currentNetwork.cables.length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Route className="w-3 h-3 text-violet-600" />
+                <span>POPs: {(currentNetwork.pops || []).length}</span>
+              </div>
                 <div className="flex items-center gap-2">
                   <Route className="w-3 h-3 text-green-600" />
                   <span>Fusões: {currentNetwork.fusions.length}</span>
@@ -169,6 +176,14 @@ function App() {
           box={selectedBox}
           open={!!selectedBox}
           onOpenChange={(open: boolean) => !open && selectBox(null)}
+        />
+      )}
+
+      {selectedPop && (
+        <PopDetail
+          pop={selectedPop}
+          open={!!selectedPop}
+          onOpenChange={(open: boolean) => !open && selectPop(null)}
         />
       )}
 

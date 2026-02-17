@@ -6,6 +6,20 @@ import type {
   Fiber, 
   Fusion, 
   Splitter,
+  City,
+  Pop,
+  PopDio,
+  PopOlt,
+  PopCable,
+  PopFusion,
+  PopSwitch,
+  PopSwitchPort,
+  PopRouter,
+  PopRouterInterface,
+  OltSlot,
+  OltPon,
+  OltGbic,
+  OltUplink,
   ReservePoint,
   Position, 
   ContinuityTest,
@@ -16,6 +30,7 @@ import { FIBER_COLORS } from '@/types/ftth';
 interface NetworkState {
   currentNetwork: Network | null;
   selectedBox: Box | null;
+  selectedPop: Pop | null;
   selectedCable: Cable | null;
   selectedFiber: Fiber | null;
   continuityTests: ContinuityTest[];
@@ -30,6 +45,22 @@ interface NetworkActions {
   setCurrentNetwork: (network: Network) => void;
   createNetwork: (name: string, description?: string) => Network;
   addBox: (box: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => Box;
+  addCity: (city: Omit<City, 'id' | 'popIds'>) => City;
+  addPop: (pop: Omit<Pop, 'id' | 'dios' | 'olts' | 'switches' | 'routers' | 'cables' | 'fusions'>) => Pop;
+  updatePop: (popId: string, updates: Partial<Pop>) => void;
+  removePop: (popId: string) => void;
+  addDioToPop: (popId: string, dioData: Omit<PopDio, 'id'>) => PopDio | null;
+  addOltToPop: (popId: string, oltData: { name: string; type: PopOlt['type']; slotCount: number; ponsPerSlot: number; gbicModel: string; connector: OltGbic['connector']; txPowerDbm: number }) => PopOlt | null;
+  addSwitchToPop: (popId: string, switchData: { name: string; portCount: number; uplinkPortCount: number }) => PopSwitch | null;
+  addRouterToPop: (popId: string, routerData: { name: string; wanCount: number; lanCount: number }) => PopRouter | null;
+  toggleOltUplink: (popId: string, oltId: string, uplinkId: string) => void;
+  addPonToOlt: (popId: string, oltId: string, slotId?: string) => OltPon | null;
+  toggleOltPon: (popId: string, oltId: string, slotId: string, ponId: string) => void;
+  toggleSwitchPort: (popId: string, switchId: string, portId: string, isUplink: boolean) => void;
+  toggleRouterInterface: (popId: string, routerId: string, interfaceId: string) => void;
+  addCableToPop: (popId: string, cableData: Omit<PopCable, 'id' | 'fibers'>) => PopCable | null;
+  connectPopEndpoints: (popId: string, endpointAId: string, endpointBId: string, fusionType?: PopFusion['fusionType'], noLoss?: boolean) => PopFusion | null;
+  disconnectPopFusion: (popId: string, fusionId: string) => void;
   updateBox: (boxId: string, updates: Partial<Box>) => void;
   removeBox: (boxId: string) => void;
   addCable: (cable: Omit<Cable, 'id' | 'fibers'>) => Cable;
@@ -53,6 +84,7 @@ interface NetworkActions {
   removeSplitterFromBox: (boxId: string, splitterId: string) => void;
   testContinuity: (test: Omit<ContinuityTest, 'id' | 'testedAt'>) => ContinuityTest;
   selectBox: (box: Box | null) => void;
+  selectPop: (pop: Pop | null) => void;
   selectCable: (cable: Cable | null) => void;
   selectFiber: (fiber: Fiber | null) => void;
   setEditing: (editing: boolean) => void;
@@ -160,6 +192,45 @@ const getFusionAttenuation = (fusion: Fusion): number => {
   if (fusion.fusionType === 'connector') return 0.2;
   if (fusion.fusionType === 'mechanical') return 0.2;
   return 0.1;
+};
+
+const getPopEndpointOwner = (pop: Pop, endpointId: string): { kind: 'dio' | 'cable' | 'olt' | 'switch' | 'router'; id: string } | null => {
+  if (endpointId.startsWith('dio:')) {
+    const parts = endpointId.split(':');
+    const dioId = parts[1];
+    if (!dioId) return null;
+    return pop.dios.some((dio) => dio.id === dioId) ? { kind: 'dio', id: dioId } : null;
+  }
+
+  if (endpointId.startsWith('cable:')) {
+    const parts = endpointId.split(':');
+    const cableId = parts[1];
+    if (!cableId) return null;
+    return pop.cables.some((cable) => cable.id === cableId) ? { kind: 'cable', id: cableId } : null;
+  }
+
+  if (endpointId.startsWith('olt:')) {
+    const parts = endpointId.split(':');
+    const oltId = parts[1];
+    if (!oltId) return null;
+    return pop.olts.some((olt) => olt.id === oltId) ? { kind: 'olt', id: oltId } : null;
+  }
+
+  if (endpointId.startsWith('switch:')) {
+    const parts = endpointId.split(':');
+    const switchId = parts[1];
+    if (!switchId) return null;
+    return pop.switches?.some((sw) => sw.id === switchId) ? { kind: 'switch', id: switchId } : null;
+  }
+
+  if (endpointId.startsWith('router:')) {
+    const parts = endpointId.split(':');
+    const routerId = parts[1];
+    if (!routerId) return null;
+    return pop.routers?.some((router) => router.id === routerId) ? { kind: 'router', id: routerId } : null;
+  }
+
+  return null;
 };
 
 const updateFiberInNetwork = (
@@ -324,6 +395,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<NetworkState>({
     currentNetwork: null,
     selectedBox: null,
+    selectedPop: null,
     selectedCable: null,
     selectedFiber: null,
     continuityTests: [],
@@ -343,15 +415,105 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       id: generateId(),
       name,
       description,
-    boxes: [],
-    reserves: [],
-    cables: [],
+      cities: [],
+      pops: [],
+      boxes: [],
+      reserves: [],
+      cables: [],
       fusions: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     setState(prev => ({ ...prev, currentNetwork: network }));
     return network;
+  }, []);
+
+  const addCity = useCallback((cityData: Omit<City, 'id' | 'popIds'>) => {
+    const city: City = {
+      ...cityData,
+      id: generateId(),
+      popIds: [],
+    };
+
+    setState((prev) => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          cities: [...(prev.currentNetwork.cities || []), city],
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    return city;
+  }, []);
+
+  const addPop = useCallback((popData: Omit<Pop, 'id' | 'dios' | 'olts' | 'switches' | 'routers' | 'cables' | 'fusions'>) => {
+    const pop: Pop = {
+      ...popData,
+      id: generateId(),
+      dios: [],
+      olts: [],
+      switches: [],
+      routers: [],
+      cables: [],
+      fusions: [],
+    };
+
+    setState((prev) => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          pops: [...(prev.currentNetwork.pops || []), pop],
+          cities: (prev.currentNetwork.cities || []).map((city) =>
+            city.id === pop.cityId && !city.popIds.includes(pop.id)
+              ? { ...city, popIds: [...city.popIds, pop.id] }
+              : city
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    return pop;
+  }, []);
+
+  const updatePop = useCallback((popId: string, updates: Partial<Pop>) => {
+    setState((prev) => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          pops: (prev.currentNetwork.pops || []).map((pop) =>
+            pop.id === popId ? { ...pop, ...updates } : pop
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
+  const removePop = useCallback((popId: string) => {
+    setState((prev) => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          pops: (prev.currentNetwork.pops || []).filter((pop) => pop.id !== popId),
+          cities: (prev.currentNetwork.cities || []).map((city) => ({
+            ...city,
+            popIds: city.popIds.filter((id) => id !== popId),
+          })),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
   }, []);
 
   const addBox = useCallback((boxData: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => {
@@ -539,6 +701,369 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       };
     });
   }, []);
+
+  const addDioToPop = useCallback((popId: string, dioData: Omit<PopDio, 'id'>) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const dio: PopDio = {
+      id: generateId(),
+      name: dioData.name,
+      portCount: Math.max(1, dioData.portCount),
+    };
+
+    updatePop(popId, { dios: [...pop.dios, dio] });
+    return dio;
+  }, [state.currentNetwork, updatePop]);
+
+  const addOltToPop = useCallback((popId: string, oltData: { name: string; type: PopOlt['type']; slotCount: number; ponsPerSlot: number; gbicModel: string; connector: OltGbic['connector']; txPowerDbm: number }) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const slotCount = Math.max(1, oltData.slotCount || 1);
+    const ponsPerSlot = Math.max(1, oltData.ponsPerSlot || 1);
+    const slots: OltSlot[] = Array.from({ length: slotCount }, (_, slotIdx) => ({
+      id: generateId(),
+      index: slotIdx + 1,
+      pons: Array.from({ length: ponsPerSlot }, (_, ponIdx) => ({
+        id: generateId(),
+        index: ponIdx + 1,
+        active: true,
+        gbic: {
+          id: generateId(),
+          model: oltData.gbicModel,
+          connector: oltData.connector,
+          txPowerDbm: oltData.txPowerDbm,
+        },
+      })),
+    }));
+    const uplinks: OltUplink[] = [
+      { id: generateId(), index: 1, active: true, connector: 'SFP+', speed: '10G' },
+      { id: generateId(), index: 2, active: true, connector: 'SFP+', speed: '10G' },
+    ];
+
+    const olt: PopOlt = {
+      id: generateId(),
+      name: oltData.name,
+      type: oltData.type,
+      slots,
+      uplinks,
+    };
+
+    updatePop(popId, { olts: [...pop.olts, olt] });
+    return olt;
+  }, [state.currentNetwork, updatePop]);
+
+  const addSwitchToPop = useCallback((popId: string, switchData: { name: string; portCount: number; uplinkPortCount: number }) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const portCount = Math.max(1, switchData.portCount);
+    const uplinkPortCount = Math.max(1, switchData.uplinkPortCount);
+    const sw: PopSwitch = {
+      id: generateId(),
+      name: switchData.name,
+      portCount,
+      uplinkPortCount,
+      ports: Array.from({ length: portCount }, (_, idx) => ({
+        id: generateId(),
+        index: idx + 1,
+        active: true,
+      })),
+      uplinks: Array.from({ length: uplinkPortCount }, (_, idx) => ({
+        id: generateId(),
+        index: idx + 1,
+        active: true,
+      })),
+    };
+
+    updatePop(popId, { switches: [...(pop.switches || []), sw] });
+    return sw;
+  }, [state.currentNetwork, updatePop]);
+
+  const addRouterToPop = useCallback((popId: string, routerData: { name: string; wanCount: number; lanCount: number }) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const wanCount = Math.max(1, routerData.wanCount);
+    const lanCount = Math.max(1, routerData.lanCount);
+    const interfaces: PopRouterInterface[] = [
+      ...Array.from({ length: wanCount }, (_, idx) => ({
+        id: generateId(),
+        index: idx + 1,
+        active: true,
+        role: 'WAN' as const,
+      })),
+      ...Array.from({ length: lanCount }, (_, idx) => ({
+        id: generateId(),
+        index: idx + 1,
+        active: true,
+        role: 'LAN' as const,
+      })),
+    ];
+
+    const router: PopRouter = {
+      id: generateId(),
+      name: routerData.name,
+      wanCount,
+      lanCount,
+      interfaces,
+    };
+
+    updatePop(popId, { routers: [...(pop.routers || []), router] });
+    return router;
+  }, [state.currentNetwork, updatePop]);
+
+  const toggleOltUplink = useCallback((popId: string, oltId: string, uplinkId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+
+    updatePop(popId, {
+      olts: pop.olts.map((item) => {
+        if (item.id !== oltId) return item;
+        return {
+          ...item,
+          uplinks: item.uplinks.map((uplink) =>
+            uplink.id === uplinkId ? { ...uplink, active: !uplink.active } : uplink
+          ),
+        };
+      }),
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const addPonToOlt = useCallback((popId: string, oltId: string, slotId?: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+    const olt = pop.olts.find((item) => item.id === oltId);
+    if (!olt) return null;
+
+    const firstPon = olt.slots.flatMap((slot) => slot.pons)[0];
+    const defaultGbic: OltGbic = {
+      id: generateId(),
+      model: firstPon?.gbic.model || 'C++',
+      connector: firstPon?.gbic.connector || 'APC-UPC',
+      txPowerDbm: firstPon?.gbic.txPowerDbm ?? 3,
+    };
+
+    let createdPon: OltPon | null = null;
+    let targetSlotId = slotId;
+
+    const nextSlots = olt.slots.map((slot) => {
+      if (targetSlotId && slot.id !== targetSlotId) return slot;
+      if (!targetSlotId) targetSlotId = slot.id;
+      if (slot.id !== targetSlotId) return slot;
+
+      createdPon = {
+        id: generateId(),
+        index: slot.pons.length + 1,
+        active: true,
+        gbic: {
+          ...defaultGbic,
+          id: generateId(),
+        },
+      };
+      return {
+        ...slot,
+        pons: [...slot.pons, createdPon],
+      };
+    });
+
+    if (!createdPon) return null;
+    updatePop(popId, {
+      olts: pop.olts.map((item) => (item.id === oltId ? { ...item, slots: nextSlots } : item)),
+    });
+
+    return createdPon;
+  }, [state.currentNetwork, updatePop]);
+
+  const toggleOltPon = useCallback((popId: string, oltId: string, slotId: string, ponId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const olt = pop.olts.find((item) => item.id === oltId);
+    if (!olt) return;
+
+    updatePop(popId, {
+      olts: pop.olts.map((item) => {
+        if (item.id !== oltId) return item;
+        return {
+          ...item,
+          slots: item.slots.map((slot) => {
+            if (slot.id !== slotId) return slot;
+            return {
+              ...slot,
+              pons: slot.pons.map((pon) =>
+                pon.id === ponId ? { ...pon, active: !pon.active } : pon
+              ),
+            };
+          }),
+        };
+      }),
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const toggleSwitchPort = useCallback((popId: string, switchId: string, portId: string, isUplink: boolean) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+
+    updatePop(popId, {
+      switches: (pop.switches || []).map((sw) => {
+        if (sw.id !== switchId) return sw;
+        if (isUplink) {
+          return {
+            ...sw,
+            uplinks: sw.uplinks.map((port) => (port.id === portId ? { ...port, active: !port.active } : port)),
+          };
+        }
+        return {
+          ...sw,
+          ports: sw.ports.map((port) => (port.id === portId ? { ...port, active: !port.active } : port)),
+        };
+      }),
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const toggleRouterInterface = useCallback((popId: string, routerId: string, interfaceId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+
+    updatePop(popId, {
+      routers: (pop.routers || []).map((router) =>
+        router.id === routerId
+          ? {
+              ...router,
+              interfaces: router.interfaces.map((iface) =>
+                iface.id === interfaceId ? { ...iface, active: !iface.active } : iface
+              ),
+            }
+          : router
+      ),
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const addCableToPop = useCallback((popId: string, cableData: Omit<PopCable, 'id' | 'fibers'>) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const cable: PopCable = {
+      ...cableData,
+      id: generateId(),
+      fiberCount: Math.max(1, cableData.fiberCount),
+      fibers: generateFibers(Math.max(1, cableData.fiberCount)),
+    };
+
+    updatePop(popId, { cables: [...pop.cables, cable] });
+    return cable;
+  }, [state.currentNetwork, updatePop]);
+
+  const connectPopEndpoints = useCallback((popId: string, endpointAId: string, endpointBId: string, fusionType: PopFusion['fusionType'] = 'fusion', noLoss: boolean = false) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    if (endpointAId === endpointBId) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+
+    const ownerA = getPopEndpointOwner(pop, endpointAId);
+    const ownerB = getPopEndpointOwner(pop, endpointBId);
+    if (!ownerA || !ownerB) return null;
+    if (ownerA.kind === ownerB.kind && ownerA.id === ownerB.id) return null;
+
+    const isInactivePonEndpoint = (endpointId: string) => {
+      if (!endpointId.startsWith('olt:')) return false;
+      const parts = endpointId.split(':');
+      const oltId = parts[1];
+      const olt = pop.olts.find((item) => item.id === oltId);
+      if (!olt) return true;
+
+      if (endpointId.includes(':u:')) {
+        const uplinkIndex = Number.parseInt(parts[3] || '', 10);
+        if (Number.isNaN(uplinkIndex)) return true;
+        const uplink = olt.uplinks.find((item) => item.index === uplinkIndex);
+        return !uplink || !uplink.active;
+      }
+
+      const slotIndex = Number.parseInt(parts[3] || '', 10);
+      const ponIndex = Number.parseInt(parts[5] || '', 10);
+      if (Number.isNaN(slotIndex) || Number.isNaN(ponIndex)) return true;
+      const slot = olt.slots.find((item) => item.index === slotIndex);
+      const pon = slot?.pons.find((item) => item.index === ponIndex);
+      return !pon || !pon.active;
+    };
+    const isInactiveSwitchOrRouterEndpoint = (endpointId: string) => {
+      if (endpointId.startsWith('switch:')) {
+        const parts = endpointId.split(':');
+        const switchId = parts[1];
+        const kind = parts[2];
+        const index = Number.parseInt(parts[3] || '', 10);
+        const sw = pop.switches?.find((item) => item.id === switchId);
+        if (!sw || Number.isNaN(index)) return true;
+        if (kind === 'u') return !sw.uplinks.find((item) => item.index === index)?.active;
+        return !sw.ports.find((item) => item.index === index)?.active;
+      }
+      if (endpointId.startsWith('router:')) {
+        const parts = endpointId.split(':');
+        const routerId = parts[1];
+        const role = parts[2];
+        const index = Number.parseInt(parts[3] || '', 10);
+        const router = pop.routers?.find((item) => item.id === routerId);
+        if (!router || Number.isNaN(index)) return true;
+        return !router.interfaces.find((item) => item.role.toLowerCase() === role && item.index === index)?.active;
+      }
+      return false;
+    };
+    if (
+      isInactivePonEndpoint(endpointAId) ||
+      isInactivePonEndpoint(endpointBId) ||
+      isInactiveSwitchOrRouterEndpoint(endpointAId) ||
+      isInactiveSwitchOrRouterEndpoint(endpointBId)
+    ) return null;
+
+    const duplicate = pop.fusions.some(
+      (fusion) =>
+        (fusion.endpointAId === endpointAId && fusion.endpointBId === endpointBId) ||
+        (fusion.endpointAId === endpointBId && fusion.endpointBId === endpointAId)
+    );
+    if (duplicate) return null;
+
+    const fusion: PopFusion = {
+      id: generateId(),
+      endpointAId,
+      endpointBId,
+      fusionType,
+      attenuation: noLoss ? 0 : fusionType === 'connector' ? 0.2 : fusionType === 'mechanical' ? 0.2 : 0.1,
+      dateCreated: new Date().toISOString(),
+    };
+
+    updatePop(popId, { fusions: [...pop.fusions, fusion] });
+    return fusion;
+  }, [state.currentNetwork, updatePop]);
+
+  const disconnectPopFusion = useCallback((popId: string, fusionId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    updatePop(popId, { fusions: pop.fusions.filter((fusion) => fusion.id !== fusionId) });
+  }, [state.currentNetwork, updatePop]);
 
   const addReserve = useCallback((reserveData: Omit<ReservePoint, 'id'>) => {
     const reserve: ReservePoint = {
@@ -820,7 +1345,19 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const selectBox = useCallback((box: Box | null) => {
-    setState(prev => ({ ...prev, selectedBox: box }));
+    setState((prev) => ({
+      ...prev,
+      selectedBox: box,
+      selectedPop: box ? null : prev.selectedPop,
+    }));
+  }, []);
+
+  const selectPop = useCallback((pop: Pop | null) => {
+    setState((prev) => ({
+      ...prev,
+      selectedPop: pop,
+      selectedBox: pop ? null : prev.selectedBox,
+    }));
   }, []);
 
   const selectCable = useCallback((cable: Cable | null) => {
@@ -931,6 +1468,73 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       const networkRaw = JSON.parse(networkData) as Network;
       const network: Network = {
         ...networkRaw,
+        cities: networkRaw.cities || [],
+        pops: (networkRaw.pops || []).map((pop) => ({
+          ...pop,
+          olts: (pop.olts || []).map((olt) => ({
+            ...olt,
+            uplinks: (olt.uplinks || []).map((uplink, uplinkIdx) => ({
+              ...uplink,
+              index: uplink.index || uplinkIdx + 1,
+              active: typeof (uplink as OltUplink & { active?: boolean }).active === 'boolean'
+                ? (uplink as OltUplink & { active?: boolean }).active!
+                : true,
+              connector: uplink.connector || 'SFP+',
+              speed: uplink.speed || '10G',
+            })).length > 0
+              ? (olt.uplinks || []).map((uplink, uplinkIdx) => ({
+                  ...uplink,
+                  index: uplink.index || uplinkIdx + 1,
+                  active: typeof (uplink as OltUplink & { active?: boolean }).active === 'boolean'
+                    ? (uplink as OltUplink & { active?: boolean }).active!
+                    : true,
+                  connector: uplink.connector || 'SFP+',
+                  speed: uplink.speed || '10G',
+                }))
+              : [
+                  { id: generateId(), index: 1, active: true, connector: 'SFP+', speed: '10G' },
+                  { id: generateId(), index: 2, active: true, connector: 'SFP+', speed: '10G' },
+                ],
+            slots: (olt.slots || []).map((slot, slotIndex) => ({
+              ...slot,
+              index: slot.index || slotIndex + 1,
+              pons: (slot.pons || []).map((pon, ponIndex) => ({
+                ...pon,
+                index: pon.index || ponIndex + 1,
+                active: typeof (pon as OltPon & { active?: boolean }).active === 'boolean'
+                  ? (pon as OltPon & { active?: boolean }).active!
+                  : true,
+                })),
+            })),
+          })),
+          switches: (pop.switches || []).map((sw) => ({
+            ...sw,
+            ports: (sw.ports || []).map((port, portIdx) => ({
+              ...port,
+              index: port.index || portIdx + 1,
+              active: typeof (port as PopSwitchPort & { active?: boolean }).active === 'boolean'
+                ? (port as PopSwitchPort & { active?: boolean }).active!
+                : true,
+            })),
+            uplinks: (sw.uplinks || []).map((port, portIdx) => ({
+              ...port,
+              index: port.index || portIdx + 1,
+              active: typeof (port as PopSwitchPort & { active?: boolean }).active === 'boolean'
+                ? (port as PopSwitchPort & { active?: boolean }).active!
+                : true,
+            })),
+          })),
+          routers: (pop.routers || []).map((router) => ({
+            ...router,
+            interfaces: (router.interfaces || []).map((iface, ifaceIdx) => ({
+              ...iface,
+              index: iface.index || ifaceIdx + 1,
+              active: typeof (iface as PopRouterInterface & { active?: boolean }).active === 'boolean'
+                ? (iface as PopRouterInterface & { active?: boolean }).active!
+                : true,
+            })),
+          })),
+        })),
         reserves: networkRaw.reserves || [],
         cables: (networkRaw.cables || []).map((cable) => {
           const fibersPerTube = Math.max(1, (cable as Partial<Cable>).fibersPerTube || 12);
@@ -967,6 +1571,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     setState({
       currentNetwork: null,
       selectedBox: null,
+      selectedPop: null,
       selectedCable: null,
       selectedFiber: null,
       continuityTests: [],
@@ -982,6 +1587,22 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     ...state,
     setCurrentNetwork,
     createNetwork,
+    addCity,
+    addPop,
+    updatePop,
+    removePop,
+    addDioToPop,
+    addOltToPop,
+    addSwitchToPop,
+    addRouterToPop,
+    toggleOltUplink,
+    addPonToOlt,
+    toggleOltPon,
+    toggleSwitchPort,
+    toggleRouterInterface,
+    addCableToPop,
+    connectPopEndpoints,
+    disconnectPopFusion,
     addBox,
     updateBox,
     removeBox,
@@ -1000,6 +1621,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     removeSplitterFromBox,
     testContinuity,
     selectBox,
+    selectPop,
     selectCable,
     selectFiber,
     setEditing,

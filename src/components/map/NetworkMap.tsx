@@ -21,7 +21,7 @@ interface NetworkMapProps {
   height?: string;
 }
 
-type ClickMode = 'normal' | 'addBox' | 'addReserve' | 'addCable' | 'editCable';
+type ClickMode = 'normal' | 'addPop' | 'addBox' | 'addReserve' | 'addCable' | 'editCable';
 
 interface PendingAttachToCable {
   cableId: string;
@@ -46,6 +46,9 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
   const { 
     currentNetwork, 
     selectBox, 
+    selectPop,
+    addCity,
+    addPop,
     addBox, 
     removeBox,
     addReserve,
@@ -56,10 +59,16 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
   } = useNetworkStore();
 
   const [showAddBox, setShowAddBox] = useState(false);
+  const [showAddPop, setShowAddPop] = useState(false);
   const [showAddReserve, setShowAddReserve] = useState(false);
   const [showAddCable, setShowAddCable] = useState(false);
   const [newBoxPosition, setNewBoxPosition] = useState<Position | null>(null);
+  const [newPopPosition, setNewPopPosition] = useState<Position | null>(null);
   const [newReservePosition, setNewReservePosition] = useState<Position | null>(null);
+  const [newPopName, setNewPopName] = useState('');
+  const [newPopCityId, setNewPopCityId] = useState('');
+  const [newCityName, setNewCityName] = useState('');
+  const [newCitySigla, setNewCitySigla] = useState('');
   const [newBoxType, setNewBoxType] = useState<'CEO' | 'CTO' | 'DIO'>('CTO');
   const [newBoxName, setNewBoxName] = useState('');
   const [newReserveName, setNewReserveName] = useState('');
@@ -221,6 +230,10 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         setNewBoxPosition(nearest ? nearest.position : clickPosition);
         setShowAddBox(true);
         setClickMode('normal');
+      } else if (clickModeRef.current === 'addPop') {
+        setNewPopPosition({ lat, lng });
+        setShowAddPop(true);
+        setClickMode('normal');
       } else if (clickModeRef.current === 'addReserve') {
         const clickPosition = { lat, lng };
         const nearest = findNearestCableForPosition(clickPosition);
@@ -370,6 +383,45 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     const L = window.L;
     markersLayer.current.clearLayers();
 
+    (currentNetwork?.pops || []).forEach((pop: any) => {
+      const popIcon = L.divIcon({
+        className: 'custom-pop-marker',
+        html: `
+          <div style="
+            width: 26px;
+            height: 26px;
+            background: #7c3aed;
+            border: 2px solid white;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+          ">POP</div>
+        `,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+
+      const marker = L.marker([pop.position.lat, pop.position.lng], { icon: popIcon });
+      const city = (currentNetwork?.cities || []).find((item: any) => item.id === pop.cityId);
+      marker.bindPopup(`
+        <div style="min-width: 200px;">
+          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${pop.name}</h3>
+          <p style="margin: 4px 0;"><strong>Cidade:</strong> ${city ? `${city.sigla} - ${city.name}` : 'N/A'}</p>
+          <p style="margin: 4px 0;"><strong>DIO:</strong> ${(pop.dios || []).length}</p>
+          <p style="margin: 4px 0;"><strong>OLT:</strong> ${(pop.olts || []).length}</p>
+        </div>
+      `);
+      marker.on('click', () => {
+        selectPop(pop);
+      });
+      marker.addTo(markersLayer.current);
+    });
+
     currentNetwork?.boxes.forEach((box: any) => {
       const marker = L.marker([box.position.lat, box.position.lng], {
         icon: createBoxIcon(box.type, box.status),
@@ -440,7 +492,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       `);
       marker.addTo(markersLayer.current);
     });
-  }, [currentNetwork?.boxes, currentNetwork?.reserves, isMapReady, createBoxIcon, selectBox]);
+  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, isMapReady, createBoxIcon, selectBox, selectPop]);
 
   // Atualizar cabos no mapa
   useEffect(() => {
@@ -509,6 +561,33 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     setNewBoxName('');
     setNewBoxPosition(null);
     setPendingAttach(null);
+  };
+
+  const handleAddPop = () => {
+    if (!newPopPosition || !newPopName.trim()) return;
+    let cityId = newPopCityId;
+    if (!cityId && newCityName.trim() && newCitySigla.trim()) {
+      const city = addCity({
+        name: newCityName.trim(),
+        sigla: newCitySigla.trim().toUpperCase(),
+      });
+      cityId = city.id;
+    }
+    if (!cityId) return;
+
+    addPop({
+      cityId,
+      name: newPopName.trim(),
+      position: newPopPosition,
+      status: 'active',
+    });
+
+    setShowAddPop(false);
+    setNewPopName('');
+    setNewPopPosition(null);
+    setNewPopCityId('');
+    setNewCityName('');
+    setNewCitySigla('');
   };
 
   const handleAddReserve = () => {
@@ -685,6 +764,16 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         </Button>
 
         <Button
+          variant={clickMode === 'addPop' ? 'default' : 'secondary'}
+          size="sm"
+          onClick={() => setClickMode(clickMode === 'addPop' ? 'normal' : 'addPop')}
+          className="shadow-lg"
+        >
+          <Plus className="w-4 h-4 mr-1" />
+          {clickMode === 'addPop' ? 'Cancelar' : 'Adicionar POP'}
+        </Button>
+
+        <Button
           variant={clickMode === 'addBox' ? 'default' : 'secondary'}
           size="sm"
           onClick={() => setClickMode(clickMode === 'addBox' ? 'normal' : 'addBox')}
@@ -809,6 +898,51 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         style={{ height, width: '100%' }}
         className="rounded-lg border overflow-hidden"
       />
+
+      {/* Modal de adicionar caixa */}
+      <Dialog open={showAddPop} onOpenChange={setShowAddPop}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Adicionar POP</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Nome do POP</Label>
+              <Input value={newPopName} onChange={(e) => setNewPopName(e.target.value)} placeholder="Ex: POP Centro" />
+            </div>
+            <div>
+              <Label>Cidade existente</Label>
+              <Select value={newPopCityId || '__none__'} onValueChange={(v) => setNewPopCityId(v === '__none__' ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Criar nova cidade</SelectItem>
+                  {(currentNetwork?.cities || []).map((city: any) => (
+                    <SelectItem key={city.id} value={city.id}>{city.sigla} - {city.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {!newPopCityId && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Nova cidade</Label>
+                  <Input value={newCityName} onChange={(e) => setNewCityName(e.target.value)} placeholder="Brasilia" />
+                </div>
+                <div>
+                  <Label>Sigla</Label>
+                  <Input value={newCitySigla} onChange={(e) => setNewCitySigla(e.target.value.toUpperCase())} placeholder="BSB" />
+                </div>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button onClick={handleAddPop} className="flex-1">Adicionar</Button>
+              <Button variant="outline" onClick={() => setShowAddPop(false)}>Cancelar</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal de adicionar caixa */}
       <Dialog open={showAddBox} onOpenChange={setShowAddBox}>
