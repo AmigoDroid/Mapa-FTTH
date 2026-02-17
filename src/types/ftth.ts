@@ -80,6 +80,7 @@ export interface Box {
   inputCables: string[];
   outputCables: string[];
   splitters?: Splitter[];
+  fusionLayout?: Record<string, { x: number; y: number }>;
   fusions: Fusion[];
   status: 'active' | 'inactive' | 'maintenance' | 'projected';
   installationDate?: string;

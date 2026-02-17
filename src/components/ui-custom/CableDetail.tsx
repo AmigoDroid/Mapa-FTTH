@@ -34,6 +34,7 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
     updateCable, 
     removeCable,
     testContinuity,
+    getFiberContinuity,
   } = useNetworkStore();
 
   const [selectedFiber, setSelectedFiber] = useState<Fiber | null>(null);
@@ -61,36 +62,37 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
   };
 
   const handleTestFiber = (fiber: Fiber) => {
-    // Simular teste de continuidade
-    const result = Math.random() > 0.1 ? 'pass' : 'fail';
+    const continuity = getFiberContinuity(fiber.id);
+    const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
     setTestResults(prev => new Map(prev).set(fiber.id, result));
     
     testContinuity({
       cableId: cable.id,
       fiberNumber: fiber.number,
       startPoint: startBox?.name || '',
-      endPoint: endBox?.name || '',
+      endPoint: continuity.path.length > 0 ? continuity.path[continuity.path.length - 1] : (endBox?.name || ''),
       result,
-      attenuation: result === 'pass' ? Math.random() * 0.5 : undefined,
+      attenuation: result === 'pass' ? continuity.attenuation : undefined,
       distance: cable.length,
-      technician: 'Técnico',
+      technician: 'Tecnico',
     });
   };
 
   const handleTestAllFibers = () => {
     const newResults = new Map(testResults);
     cable.fibers.forEach((fiber) => {
-      const result = Math.random() > 0.1 ? 'pass' : 'fail';
+      const continuity = getFiberContinuity(fiber.id);
+      const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
       newResults.set(fiber.id, result);
       testContinuity({
         cableId: cable.id,
         fiberNumber: fiber.number,
         startPoint: startBox?.name || '',
-        endPoint: endBox?.name || '',
+        endPoint: continuity.path.length > 0 ? continuity.path[continuity.path.length - 1] : (endBox?.name || ''),
         result,
-        attenuation: result === 'pass' ? Math.random() * 0.5 : undefined,
+        attenuation: result === 'pass' ? continuity.attenuation : undefined,
         distance: cable.length,
-        technician: 'Técnico',
+        technician: 'Tecnico',
       });
     });
     setTestResults(newResults);
@@ -468,3 +470,4 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
     </Dialog>
   );
 }
+

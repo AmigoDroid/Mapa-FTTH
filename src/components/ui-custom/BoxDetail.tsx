@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -9,7 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Activity, Link2, Unlink, Zap, Save, Trash2, User, MapPin, Calendar, Settings, CheckCircle2, XCircle, Edit3, Plus, Maximize2, Minimize2 } from 'lucide-react';
+import { Activity, Link2, Unlink, Zap, Save, Trash2, User, MapPin, Calendar, Settings, CheckCircle2, XCircle, Edit3, Plus, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
 import type { Fiber, Box, Splitter } from '@/types/ftth';
 import { FusionBoardCanvas } from './box-detail/FusionBoardCanvas';
 import type { DragState, EndpointOption, EntityPosition } from './box-detail/types';
@@ -26,10 +26,27 @@ interface NodeDragState {
   offsetY: number;
 }
 
+interface BoxContinuityResult {
+  fiberId: string;
+  fiberNumber: number;
+  result: 'pass' | 'fail';
+  attenuation?: number;
+  path: string[];
+  testedAt: string;
+}
+
+interface BoxCableFiberItem {
+  cableId: string;
+  cableName: string;
+  direction: 'Entrada' | 'Saida';
+  fiber: Fiber;
+}
+
 const GPON_FIBER_LOSS_DB_PER_KM = 0.25;
 const GPON_FUSION_LOSS_DB = 0.1;
 const GPON_MECHANICAL_LOSS_DB = 0.2;
 const GPON_CONNECTOR_LOSS_DB = 0.2;
+const isFusionEntityId = (entityId: string) => entityId.startsWith('cable:') || entityId.startsWith('splitter:');
 
 export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const {
@@ -44,6 +61,8 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     addSplitterToBox,
     removeSplitterFromBox,
     testContinuity,
+    continuityTests,
+    getFiberContinuity,
   } = useNetworkStore();
 
   const currentBox = currentNetwork?.boxes.find((b) => b.id === box.id) || box;
@@ -68,35 +87,55 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const [nodeDragState, setNodeDragState] = useState<NodeDragState | null>(null);
   const [entityPositions, setEntityPositions] = useState<Record<string, EntityPosition>>({});
   const fusionBoardRef = useRef<HTMLDivElement | null>(null);
+  const fusionSceneRef = useRef<HTMLDivElement | null>(null);
+  const entityPositionsRef = useRef<Record<string, EntityPosition>>({});
   const endpointRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [layoutTick, setLayoutTick] = useState(0);
+  const [fusionBoardZoom, setFusionBoardZoom] = useState(1);
 
   const [editingBox, setEditingBox] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [boxName, setBoxName] = useState(currentBox.name);
   const [boxAddress, setBoxAddress] = useState(currentBox.address || '');
   const [boxStatus, setBoxStatus] = useState(currentBox.status);
-  const [continuityTestResult, setContinuityTestResult] = useState<{ fiberId: string; result: 'pass' | 'fail' } | null>(null);
+  const [continuityTestResult, setContinuityTestResult] = useState<BoxContinuityResult | null>(null);
   const [showAddCableDialog, setShowAddCableDialog] = useState(false);
   const [newCableTargetBox, setNewCableTargetBox] = useState('');
   const [newCableFiberCount, setNewCableFiberCount] = useState(12);
   const [newCableType, setNewCableType] = useState<'drop' | 'distribution' | 'feeder' | 'backbone'>('distribution');
+  const layoutInitKeyRef = useRef<string>('');
+
+  const localConnections = useMemo(
+    () => (currentBox.fusions || []).filter((fusion) => fusion.boxAId === currentBox.id && fusion.boxBId === currentBox.id),
+    [currentBox]
+  );
+
+  const localFusionByEndpointId = useMemo(() => {
+    return localConnections.reduce<Record<string, string>>((acc, fusion) => {
+      acc[fusion.fiberAId] = fusion.id;
+      acc[fusion.fiberBId] = fusion.id;
+      return acc;
+    }, {});
+  }, [localConnections]);
+
+  const boxCableFibers = useMemo(() => {
+    const items: BoxCableFiberItem[] = [];
+    relatedCables.forEach((cable) => {
+      const direction: 'Entrada' | 'Saida' = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
+      cable.fibers.forEach((fiber) => {
+        items.push({
+          cableId: cable.id,
+          cableName: cable.name,
+          direction,
+          fiber,
+        });
+      });
+    });
+    return items;
+  }, [relatedCables, currentBox.id]);
 
   const endpointOptions = useMemo(() => {
     const options: EndpointOption[] = [];
-
-    currentBox.fibers.forEach((fiber) => {
-      options.push({
-        id: fiber.id,
-        label: `Fibra ${fiber.number} (${fiber.color.name})`,
-        group: `${currentBox.name} - Caixa`,
-        colorHex: fiber.color.hex,
-        status: fiber.status,
-        fusionId: fiber.fusionId,
-        entityId: `box:${currentBox.id}`,
-        entityLabel: `${currentBox.name} (Caixa)`,
-      });
-    });
 
     relatedCables.forEach((cable) => {
       const direction = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
@@ -107,7 +146,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
           group: `${cable.name} (${direction})`,
           colorHex: fiber.color.hex,
           status: fiber.status,
-          fusionId: fiber.fusionId,
+          fusionId: localFusionByEndpointId[fiber.id],
           entityId: `cable:${cable.id}`,
           entityLabel: `${cable.name} (${direction})`,
         });
@@ -122,7 +161,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
           group: `${splitter.name} (${splitter.type})`,
           colorHex: fiber.color.hex,
           status: fiber.status,
-          fusionId: fiber.fusionId,
+          fusionId: localFusionByEndpointId[fiber.id],
           entityId: `splitter:${splitter.id}`,
           entityLabel: `${splitter.name} (${splitter.type})`,
         });
@@ -135,7 +174,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
           group: `${splitter.name} (${splitter.type})`,
           colorHex: fiber.color.hex,
           status: fiber.status,
-          fusionId: fiber.fusionId,
+          fusionId: localFusionByEndpointId[fiber.id],
           entityId: `splitter:${splitter.id}`,
           entityLabel: `${splitter.name} (${splitter.type})`,
         });
@@ -143,7 +182,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     });
 
     return options;
-  }, [currentBox, relatedCables]);
+  }, [currentBox, relatedCables, localFusionByEndpointId]);
 
   const endpointById = useMemo(
     () => endpointOptions.reduce<Record<string, EndpointOption>>((acc, item) => {
@@ -153,14 +192,13 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     [endpointOptions]
   );
 
-  const entityOptions = useMemo(() => {
-    const entities: Array<{ id: string; label: string; type: 'box' | 'cable' | 'splitter' }> = [];
+  const fusionEndpointOptions = useMemo(
+    () => endpointOptions.filter((endpoint) => isFusionEntityId(endpoint.entityId)),
+    [endpointOptions]
+  );
 
-    entities.push({
-      id: `box:${currentBox.id}`,
-      label: `${currentBox.name} (Caixa)`,
-      type: 'box',
-    });
+  const entityOptions = useMemo(() => {
+    const entities: Array<{ id: string; label: string; type: 'cable' | 'splitter' }> = [];
 
     relatedCables.forEach((cable) => {
       const direction = cable.startPoint === currentBox.id ? 'Saida' : 'Entrada';
@@ -182,22 +220,51 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     return entities;
   }, [currentBox, relatedCables]);
 
-  const localConnections = useMemo(
-    () => (currentBox.fusions || []).filter((fusion) => fusion.boxAId === currentBox.id && fusion.boxBId === currentBox.id),
-    [currentBox]
+  const boardConnections = useMemo(
+    () =>
+      localConnections.filter((fusion) => {
+        const endpointA = endpointById[fusion.fiberAId];
+        const endpointB = endpointById[fusion.fiberBId];
+        return !!endpointA && !!endpointB && isFusionEntityId(endpointA.entityId) && isFusionEntityId(endpointB.entityId);
+      }),
+    [localConnections, endpointById]
   );
 
-  const boardConnections = localConnections;
+  const boxContinuityTests = useMemo(() => {
+    const marker = `BOX:${currentBox.id};`;
+    return continuityTests
+      .filter((test) => (test.observations || '').includes(marker))
+      .sort((a, b) => new Date(b.testedAt).getTime() - new Date(a.testedAt).getTime());
+  }, [continuityTests, currentBox.id]);
+
+  const fusionBoardSceneSize = useMemo(() => {
+    const positions = Object.values(entityPositions);
+    const maxX = positions.length > 0 ? Math.max(...positions.map((position) => position.x)) : 0;
+    const maxY = positions.length > 0 ? Math.max(...positions.map((position) => position.y)) : 0;
+    return {
+      width: Math.max(1400, maxX + 460),
+      height: Math.max(800, maxY + 420),
+    };
+  }, [entityPositions]);
+
+  const entityLayoutKey = useMemo(() => {
+    return entityOptions.map((entity) => entity.id).sort().join('|');
+  }, [entityOptions]);
+
+  useEffect(() => {
+    if (open) return;
+    layoutInitKeyRef.current = '';
+  }, [open]);
 
   const fiberUsageStats = useMemo(() => {
-    const total = currentBox.fibers.length;
-    const active = currentBox.fibers.filter((fiber) => fiber.status === 'active').length;
-    const inactive = currentBox.fibers.filter((fiber) => fiber.status === 'inactive').length;
-    const reserved = currentBox.fibers.filter((fiber) => fiber.status === 'reserved').length;
-    const faulty = currentBox.fibers.filter((fiber) => fiber.status === 'faulty').length;
+    const total = boxCableFibers.length;
+    const active = boxCableFibers.filter((item) => item.fiber.status === 'active').length;
+    const inactive = boxCableFibers.filter((item) => item.fiber.status === 'inactive').length;
+    const reserved = boxCableFibers.filter((item) => item.fiber.status === 'reserved').length;
+    const faulty = boxCableFibers.filter((item) => item.fiber.status === 'faulty').length;
     const utilization = total > 0 ? (active / total) * 100 : 0;
     return { total, active, inactive, reserved, faulty, utilization };
-  }, [currentBox.fibers]);
+  }, [boxCableFibers]);
 
   const cableStats = useMemo(() => {
     const incoming = relatedCables.filter((cable) => cable.endPoint === currentBox.id);
@@ -289,46 +356,95 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   }, []);
 
   useEffect(() => {
-    if (entityOptions.length === 0) return;
-    setEntityPositions((prev) => {
-      const next = { ...prev };
-      const cols = 3;
-      const colWidth = 290;
-      const rowHeight = 220;
+    if (!open || entityOptions.length === 0) return;
+    const initKey = `${currentBox.id}:${entityLayoutKey}`;
+    if (layoutInitKeyRef.current === initKey) return;
+    layoutInitKeyRef.current = initKey;
 
-      entityOptions.forEach((entity, index) => {
-        if (next[entity.id]) return;
-        const col = index % cols;
-        const row = Math.floor(index / cols);
-        next[entity.id] = {
-          x: 20 + col * colWidth,
-          y: 20 + row * rowHeight,
-        };
-      });
+    const next: Record<string, EntityPosition> = {};
+    const cols = 3;
+    const colWidth = 290;
+    const rowHeight = 220;
 
-      return next;
+    entityOptions.forEach((entity, index) => {
+      const saved = currentBox.fusionLayout?.[entity.id];
+      if (saved) {
+        next[entity.id] = { x: saved.x, y: saved.y };
+        return;
+      }
+      const col = index % cols;
+      const row = Math.floor(index / cols);
+      next[entity.id] = {
+        x: 20 + col * colWidth,
+        y: 20 + row * rowHeight,
+      };
     });
-  }, [entityOptions]);
+
+    setEntityPositions(next);
+  }, [open, currentBox.id, entityLayoutKey, entityOptions, currentBox.fusionLayout]);
+
+  useEffect(() => {
+    entityPositionsRef.current = entityPositions;
+  }, [entityPositions]);
+
+  const persistFusionLayout = useCallback((positions: Record<string, EntityPosition>) => {
+    if (entityOptions.length === 0) return;
+
+    const snapshot = entityOptions.reduce<Record<string, { x: number; y: number }>>((acc, entity) => {
+      const position = positions[entity.id];
+      if (!position) return acc;
+      acc[entity.id] = {
+        x: Math.round(position.x),
+        y: Math.round(position.y),
+      };
+      return acc;
+    }, {});
+
+    if (Object.keys(snapshot).length < entityOptions.length) return;
+
+    const currentLayout = currentBox.fusionLayout || {};
+    const currentKeys = Object.keys(currentLayout).sort();
+    const nextKeys = Object.keys(snapshot).sort();
+    if (currentKeys.length === nextKeys.length) {
+      const unchanged = nextKeys.every((key) => {
+        const currentPosition = currentLayout[key];
+        const nextPosition = snapshot[key];
+        return !!currentPosition && currentPosition.x === nextPosition?.x && currentPosition.y === nextPosition?.y;
+      });
+      if (unchanged) return;
+    }
+
+    updateBox(currentBox.id, { fusionLayout: snapshot });
+  }, [entityOptions, currentBox.fusionLayout, currentBox.id, updateBox]);
 
   useEffect(() => {
     setLayoutTick((value) => value + 1);
   }, [boardConnections.length, entityPositions]);
 
+  const getScenePoint = useCallback((clientX: number, clientY: number) => {
+    const scene = fusionSceneRef.current;
+    if (!scene) return null;
+    const sceneRect = scene.getBoundingClientRect();
+    return {
+      x: (clientX - sceneRect.left) / fusionBoardZoom,
+      y: (clientY - sceneRect.top) / fusionBoardZoom,
+    };
+  }, [fusionBoardZoom]);
+
   useEffect(() => {
     if (!dragState && !nodeDragState) return;
 
     const handleMouseMove = (event: MouseEvent) => {
-      const board = fusionBoardRef.current;
-      if (!board) return;
-      const rect = board.getBoundingClientRect();
+      const point = getScenePoint(event.clientX, event.clientY);
+      if (!point) return;
       if (dragState) {
-        setDragState((prev) => (prev ? { ...prev, x: event.clientX - rect.left, y: event.clientY - rect.top } : null));
+        setDragState((prev) => (prev ? { ...prev, x: point.x, y: point.y } : null));
       }
       if (nodeDragState) {
-        const maxX = Math.max(0, rect.width - 260);
-        const maxY = Math.max(0, rect.height - 190);
-        const nextX = Math.min(maxX, Math.max(0, event.clientX - rect.left - nodeDragState.offsetX));
-        const nextY = Math.min(maxY, Math.max(0, event.clientY - rect.top - nodeDragState.offsetY));
+        const maxX = Math.max(0, fusionBoardSceneSize.width - 380);
+        const maxY = Math.max(0, fusionBoardSceneSize.height - 220);
+        const nextX = Math.min(maxX, Math.max(0, point.x - nodeDragState.offsetX));
+        const nextY = Math.min(maxY, Math.max(0, point.y - nodeDragState.offsetY));
         setEntityPositions((prev) => ({
           ...prev,
           [nodeDragState.entityId]: { x: nextX, y: nextY },
@@ -337,6 +453,9 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     };
 
     const handleMouseUp = () => {
+      if (nodeDragState) {
+        persistFusionLayout(entityPositionsRef.current);
+      }
       setDragState(null);
       setNodeDragState(null);
     };
@@ -347,17 +466,17 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, nodeDragState]);
+  }, [dragState, nodeDragState, fusionBoardSceneSize, getScenePoint, persistFusionLayout]);
 
   const getEndpointPosition = (endpointId: string) => {
-    const board = fusionBoardRef.current;
+    const scene = fusionSceneRef.current;
     const endpoint = endpointRefs.current[endpointId];
-    if (!board || !endpoint) return null;
-    const boardRect = board.getBoundingClientRect();
+    if (!scene || !endpoint) return null;
+    const sceneRect = scene.getBoundingClientRect();
     const endpointRect = endpoint.getBoundingClientRect();
     return {
-      x: endpointRect.left + endpointRect.width / 2 - boardRect.left,
-      y: endpointRect.top + endpointRect.height / 2 - boardRect.top,
+      x: (endpointRect.left + endpointRect.width / 2 - sceneRect.left) / fusionBoardZoom,
+      y: (endpointRect.top + endpointRect.height / 2 - sceneRect.top) / fusionBoardZoom,
     };
   };
 
@@ -382,6 +501,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       setDragState(null);
       return;
     }
+    if (!isFusionEntityId(sourceEndpoint.entityId) || !isFusionEntityId(targetEndpoint.entityId)) {
+      setDragState(null);
+      return;
+    }
     if (sourceEndpoint.entityId === targetEndpoint.entityId) {
       setDragState(null);
       return;
@@ -392,19 +515,18 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   };
 
   const startNodeDrag = (entityId: string, event: { clientX: number; clientY: number }) => {
-    const board = fusionBoardRef.current;
-    if (!board) return;
-    const rect = board.getBoundingClientRect();
+    const point = getScenePoint(event.clientX, event.clientY);
+    if (!point) return;
     const position = entityPositions[entityId] || { x: 0, y: 0 };
     setNodeDragState({
       entityId,
-      offsetX: event.clientX - rect.left - position.x,
-      offsetY: event.clientY - rect.top - position.y,
+      offsetX: point.x - position.x,
+      offsetY: point.y - position.y,
     });
   };
 
   const getEntityType = (entityId: string) => {
-    return entityOptions.find((entity) => entity.id === entityId)?.type || 'box';
+    return entityOptions.find((entity) => entity.id === entityId)?.type || 'cable';
   };
 
   const getEntityCardClass = (entityId: string) => {
@@ -438,6 +560,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
 
   const handleCreateBoxConnection = () => {
     if (!connectionEndpointA || !connectionEndpointB) return;
+    const sourceEndpoint = endpointById[connectionEndpointA];
+    const targetEndpoint = endpointById[connectionEndpointB];
+    if (!sourceEndpoint || !targetEndpoint) return;
+    if (!isFusionEntityId(sourceEndpoint.entityId) || !isFusionEntityId(targetEndpoint.entityId)) return;
     const created = connectBoxEndpoints(currentBox.id, connectionEndpointA, connectionEndpointB, connectionType);
     if (!created) return;
     setConnectionEndpointA('');
@@ -455,6 +581,18 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
 
   const handleLayoutSync = () => {
     setLayoutTick((value) => value + 1);
+  };
+
+  const handleZoomInFusionBoard = () => {
+    setFusionBoardZoom((value) => Math.min(2, Number((value + 0.1).toFixed(2))));
+  };
+
+  const handleZoomOutFusionBoard = () => {
+    setFusionBoardZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(2))));
+  };
+
+  const handleZoomResetFusionBoard = () => {
+    setFusionBoardZoom(1);
   };
 
   const handleRemoveEntity = (entityId: string) => {
@@ -506,8 +644,8 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   };
 
   const handleUndoLastFusion = () => {
-    if (localConnections.length === 0) return;
-    const lastFusion = localConnections[localConnections.length - 1];
+    if (boardConnections.length === 0) return;
+    const lastFusion = boardConnections[boardConnections.length - 1];
     if (!lastFusion) return;
     disconnectFibers(lastFusion.id);
   };
@@ -518,29 +656,40 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   };
 
   const handleTestContinuity = (fiber: Fiber) => {
-    const result = Math.random() > 0.1 ? 'pass' : 'fail';
-    setContinuityTestResult({ fiberId: fiber.id, result });
+    const continuity = getFiberContinuity(fiber.id);
+    const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
+    const endPoint = continuity.path.length > 0 ? continuity.path[continuity.path.length - 1] : 'Sem continuidade';
 
-    testContinuity({
-      cableId: currentBox.inputCables[0] || currentBox.outputCables[0] || '',
+    const savedTest = testContinuity({
+      cableId: relatedCables[0]?.id || '',
       fiberNumber: fiber.number,
       startPoint: currentBox.name,
-      endPoint: fiber.connectedTo ? 'Conectado' : 'Nao conectado',
+      endPoint,
       result,
-      attenuation: result === 'pass' ? Math.random() * 0.5 : undefined,
-      technician: 'Tecnico',
+      attenuation: result === 'pass' ? continuity.attenuation : undefined,
+      technician: 'Sistema',
+      observations: `BOX:${currentBox.id};FIBER:${fiber.id};PATH:${continuity.path.join(' > ') || 'N/A'}`,
+    });
+
+    setContinuityTestResult({
+      fiberId: fiber.id,
+      fiberNumber: fiber.number,
+      result,
+      attenuation: savedTest.attenuation,
+      path: continuity.path,
+      testedAt: savedTest.testedAt,
     });
   };
 
-  const getConnectedFiberInfo = (fiber: Fiber) => {
-    if (!fiber.fusionId) return null;
-    const fusion = currentBox.fusions.find((f) => f.id === fiber.fusionId);
+  const getConnectedFiberInfo = (fiberId: string) => {
+    const fusionId = localFusionByEndpointId[fiberId];
+    if (!fusionId) return null;
+    const fusion = localConnections.find((item) => item.id === fusionId);
     if (!fusion) return null;
-    const otherBoxId = fusion.boxAId === currentBox.id ? fusion.boxBId : fusion.boxAId;
-    const otherBox = currentNetwork?.boxes.find((b) => b.id === otherBoxId);
-    const otherFiberId = fusion.fiberAId === fiber.id ? fusion.fiberBId : fusion.fiberAId;
-    const otherFiber = otherBox?.fibers.find((f) => f.id === otherFiberId);
-    return { box: otherBox, fiber: otherFiber };
+    const otherFiberId = fusion.fiberAId === fiberId ? fusion.fiberBId : fusion.fiberAId;
+    const otherEndpoint = endpointById[otherFiberId];
+    if (!otherEndpoint) return 'conexao interna';
+    return `${otherEndpoint.group}: ${otherEndpoint.label}`;
   };
 
   return (
@@ -579,31 +728,20 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
           <TabsContent value="fibers" className="space-y-4">
             <div className="flex justify-between items-center">
               <div className="text-sm text-gray-500">
-                Total: {currentBox.fibers.length} fibras | Ativas: {currentBox.fibers.filter((f) => f.status === 'active').length} |
-                Disponiveis: {currentBox.fibers.filter((f) => f.status === 'inactive').length}
+                Total: {boxCableFibers.length} fibras | Ativas: {boxCableFibers.filter((item) => item.fiber.status === 'active').length} |
+                Disponiveis: {boxCableFibers.filter((item) => item.fiber.status === 'inactive').length}
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSelectedFiber(null);
-                  setShowFusionDialog(true);
-                }}
-              >
-                <Link2 className="w-4 h-4 mr-1" />
-                Nova Fusao Externa
-              </Button>
             </div>
 
             <ScrollArea className="h-[360px]">
               <div className="grid grid-cols-6 gap-2">
-                {currentBox.fibers.map((fiber) => {
+                {boxCableFibers.map(({ fiber, cableName, direction, cableId }) => {
                   const status = getFiberStatus(fiber);
-                  const connectedInfo = getConnectedFiberInfo(fiber);
+                  const connectedInfo = getConnectedFiberInfo(fiber.id);
 
                   return (
                     <div
-                      key={fiber.id}
+                      key={`${cableId}-${fiber.id}`}
                       className={`relative p-3 rounded-lg border-2 cursor-pointer transition-all ${
                         selectedFiber?.id === fiber.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
                       }`}
@@ -613,9 +751,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                         <div className="w-4 h-4 rounded-full border" style={{ backgroundColor: fiber.color.hex, borderColor: '#ccc' }} />
                         <span className="font-mono text-sm">{fiber.number}</span>
                       </div>
+                      <div className="text-[10px] text-gray-500 truncate">{cableName} ({direction})</div>
                       <div className={`w-full h-1 rounded ${status.color}`} />
                       <div className="text-xs text-gray-500 mt-1">{status.label}</div>
-                      {connectedInfo && <div className="text-xs text-blue-600 mt-1 truncate">-&gt; {connectedInfo.box?.name || 'conexao interna'}</div>}
+                      {connectedInfo && <div className="text-xs text-blue-600 mt-1 truncate">-&gt; {connectedInfo}</div>}
                       {fiber.clientName && (
                         <div className="text-xs text-green-600 mt-1 flex items-center gap-1">
                           <User className="w-3 h-3" />
@@ -643,17 +782,19 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                   </div>
                 </div>
                 <div className="flex gap-2 mt-3">
-                  {!selectedFiber.fusionId ? (
-                    <Button size="sm" onClick={() => setShowFusionDialog(true)}>
-                      <Link2 className="w-4 h-4 mr-1" />
-                      Fusao Externa
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="destructive" onClick={() => selectedFiber.fusionId && disconnectFibers(selectedFiber.fusionId)}>
+                  {localFusionByEndpointId[selectedFiber.id] ? (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => {
+                        const fusionId = localFusionByEndpointId[selectedFiber.id];
+                        if (fusionId) disconnectFibers(fusionId);
+                      }}
+                    >
                       <Unlink className="w-4 h-4 mr-1" />
                       Desconectar
                     </Button>
-                  )}
+                  ) : null}
                   <Button size="sm" variant="outline" onClick={() => handleTestContinuity(selectedFiber)}>
                     <Activity className="w-4 h-4 mr-1" />
                     Testar
@@ -708,7 +849,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                       <SelectValue placeholder="Selecione..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {endpointOptions.map((endpoint) => (
+                      {fusionEndpointOptions.map((endpoint) => (
                         <SelectItem key={endpoint.id} value={endpoint.id}>
                           {endpoint.group}: {endpoint.label}
                         </SelectItem>
@@ -723,7 +864,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                       <SelectValue placeholder="Selecione..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {endpointOptions.filter((endpoint) => endpoint.id !== connectionEndpointA).map((endpoint) => (
+                      {fusionEndpointOptions.filter((endpoint) => endpoint.id !== connectionEndpointA).map((endpoint) => (
                         <SelectItem key={endpoint.id} value={endpoint.id}>
                           {endpoint.group}: {endpoint.label}
                         </SelectItem>
@@ -792,9 +933,23 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                 </Button>
               </div>
               <div className="col-span-1">
-                <Button variant="outline" onClick={handleUndoLastFusion} disabled={localConnections.length === 0} className="w-full">
+                <Button variant="outline" onClick={handleUndoLastFusion} disabled={boardConnections.length === 0} className="w-full">
                   Desfazer Ultima Fusao
                 </Button>
+              </div>
+              <div className="col-span-1">
+                <div className="flex items-center gap-2 border rounded-md px-2 py-1.5 bg-white">
+                  <Button type="button" size="sm" variant="outline" onClick={handleZoomOutFusionBoard} className="h-7 px-2">
+                    <ZoomOut className="w-3.5 h-3.5" />
+                  </Button>
+                  <span className="text-xs font-medium w-14 text-center">{Math.round(fusionBoardZoom * 100)}%</span>
+                  <Button type="button" size="sm" variant="outline" onClick={handleZoomInFusionBoard} className="h-7 px-2">
+                    <ZoomIn className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={handleZoomResetFusionBoard} className="h-7 px-2 text-xs">
+                    100%
+                  </Button>
+                </div>
               </div>
               <div className="col-span-1 text-xs text-gray-500 border rounded-md px-3 py-2 bg-gray-50">
                 Arraste os blocos e desenhe de uma fibra para outra.
@@ -810,7 +965,10 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
               boardConnections={boardConnections}
               dragState={dragState}
               layoutTick={layoutTick}
+              zoom={fusionBoardZoom}
+              sceneSize={fusionBoardSceneSize}
               fusionBoardRef={fusionBoardRef}
+              fusionSceneRef={fusionSceneRef}
               endpointRefs={endpointRefs}
               getEndpointPosition={getEndpointPosition}
               getEntityCardClass={getEntityCardClass}
@@ -992,18 +1150,57 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
             )}
           </TabsContent>
 
-          <TabsContent value="tests">
+          <TabsContent value="tests" className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm text-gray-500">
+                {selectedFiber
+                  ? `Fibra selecionada: ${selectedFiber.number} (${selectedFiber.color.name})`
+                  : 'Selecione uma fibra na aba "Fibras" para testar continuidade'}
+              </div>
+              <Button size="sm" variant="outline" onClick={() => selectedFiber && handleTestContinuity(selectedFiber)} disabled={!selectedFiber}>
+                <Activity className="w-4 h-4 mr-1" />
+                Testar Agora
+              </Button>
+            </div>
             <ScrollArea className="h-[400px]">
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {continuityTestResult && (
                   <div className={`p-4 rounded-lg ${continuityTestResult.result === 'pass' ? 'bg-green-50' : 'bg-red-50'}`}>
                     <div className="flex items-center gap-2">
                       {continuityTestResult.result === 'pass' ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <XCircle className="w-5 h-5 text-red-500" />}
-                      <span className="font-medium">Teste de continuidade {continuityTestResult.result === 'pass' ? 'aprovado' : 'reprovado'}</span>
+                      <span className="font-medium">
+                        Fibra {continuityTestResult.fiberNumber}: teste {continuityTestResult.result === 'pass' ? 'aprovado' : 'reprovado'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm text-gray-700">
+                      <div>Horario: {new Date(continuityTestResult.testedAt).toLocaleString('pt-BR')}</div>
+                      <div>Caminho: {continuityTestResult.path.length > 0 ? continuityTestResult.path.join(' -> ') : 'Sem rota detectada'}</div>
+                      <div>Atenuacao: {typeof continuityTestResult.attenuation === 'number' ? `${continuityTestResult.attenuation.toFixed(3)} dB` : 'N/A'}</div>
                     </div>
                   </div>
                 )}
-                <div className="text-center text-gray-500 py-8">Selecione uma fibra e clique em "Testar" para verificar a continuidade</div>
+                {boxContinuityTests.length === 0 ? (
+                  <div className="text-center text-gray-500 py-8">Nenhum teste registrado para esta caixa.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {boxContinuityTests.map((test) => (
+                      <div
+                        key={test.id}
+                        className={`p-3 rounded-lg border ${test.result === 'pass' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-sm font-medium">Fibra {test.fiberNumber}</div>
+                          <div className="text-xs text-gray-500">{new Date(test.testedAt).toLocaleString('pt-BR')}</div>
+                        </div>
+                        <div className="text-xs mt-1 text-gray-700">
+                          Resultado: {test.result === 'pass' ? 'Aprovado' : 'Reprovado'} | Atenuacao:{' '}
+                          {typeof test.attenuation === 'number' ? `${test.attenuation.toFixed(3)} dB` : 'N/A'}
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1">Destino: {test.endPoint || 'N/A'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </ScrollArea>
           </TabsContent>

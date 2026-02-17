@@ -44,8 +44,8 @@ function App() {
   // Criar rede de exemplo na primeira execução
   useEffect(() => {
     if (!currentNetwork) {
-      createNetwork('Rede FTTH - Exemplo', 'Rede de exemplo para demonstração');
-      toast.success('Rede de exemplo criada! Use o painel lateral para adicionar caixas e cabos.');
+      //createNetwork('Rede FTTH - Exemplo', 'Rede de exemplo para demonstração');
+     // toast.success('Rede de exemplo criada! Use o painel lateral para adicionar caixas e cabos.');
     }
   }, [currentNetwork, createNetwork]);
 
@@ -88,7 +88,7 @@ function App() {
             </Button>
             <div className="flex items-center gap-2">
               <Network className="w-6 h-6 text-blue-600" />
-              <h1 className="text-xl font-bold">FTTH Network Doc</h1>
+              <h1 className="text-xl font-bold">FABREU FTTH Doc</h1>
             </div>
             {currentNetwork && (
               <span className="text-sm text-gray-500 ml-4">
@@ -152,6 +152,11 @@ function App() {
                   <Route className="w-3 h-3 text-green-600" />
                   <span>Cabos: {currentNetwork.cables.length}</span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Route className="w-3 h-3 text-green-600" />
+                  <span>Fusões: {currentNetwork.fusions.length}</span>
+                </div>
+              
               </div>
             </div>
           )}

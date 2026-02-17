@@ -121,6 +121,35 @@ const getFiberById = (network: Network, fiberId: string): Fiber | undefined => {
   return undefined;
 };
 
+const getFiberOwnerLabel = (network: Network, fiberId: string): string | null => {
+  for (const box of network.boxes) {
+    const boxFiber = box.fibers.find((fiber) => fiber.id === fiberId);
+    if (boxFiber) return `${box.name} (Caixa)`;
+
+    for (const splitter of box.splitters || []) {
+      const inputFiber = splitter.inputFibers.find((fiber) => fiber.id === fiberId);
+      if (inputFiber) return `${box.name} - ${splitter.name} (IN)`;
+
+      const outputFiber = splitter.outputFibers.find((fiber) => fiber.id === fiberId);
+      if (outputFiber) return `${box.name} - ${splitter.name} (OUT)`;
+    }
+  }
+
+  for (const cable of network.cables) {
+    const cableFiber = cable.fibers.find((fiber) => fiber.id === fiberId);
+    if (cableFiber) return `${cable.name} (Cabo)`;
+  }
+
+  return null;
+};
+
+const getFusionAttenuation = (fusion: Fusion): number => {
+  if (typeof fusion.attenuation === 'number') return fusion.attenuation;
+  if (fusion.fusionType === 'connector') return 0.2;
+  if (fusion.fusionType === 'mechanical') return 0.2;
+  return 0.1;
+};
+
 const updateFiberInNetwork = (
   network: Network,
   fiberId: string,
@@ -243,7 +272,6 @@ const getBoxEndpointFiberIds = (network: Network, boxId: string): Set<string> =>
   const box = network.boxes.find((item) => item.id === boxId);
   if (!box) return endpoints;
 
-  box.fibers.forEach((fiber) => endpoints.add(fiber.id));
   (box.splitters || []).forEach((splitter) => {
     splitter.inputFibers.forEach((fiber) => endpoints.add(fiber.id));
     splitter.outputFibers.forEach((fiber) => endpoints.add(fiber.id));
@@ -256,6 +284,15 @@ const getBoxEndpointFiberIds = (network: Network, boxId: string): Set<string> =>
     });
 
   return endpoints;
+};
+
+const getLocalFusionForEndpoint = (network: Network, boxId: string, endpointId: string): Fusion | undefined => {
+  return network.fusions.find(
+    (fusion) =>
+      fusion.boxAId === boxId &&
+      fusion.boxBId === boxId &&
+      (fusion.fiberAId === endpointId || fusion.fiberBId === endpointId)
+  );
 };
 
 const getSplitterPortCount = (type: Splitter['type']) => {
@@ -311,6 +348,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       fibers: generateFibers(boxData.capacity),
       inputCables: [],
       outputCables: [],
+      fusionLayout: {},
       fusions: [],
     };
 
@@ -547,8 +585,11 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       const endpointA = getFiberById(currentNetwork, endpointAId);
       const endpointB = getFiberById(currentNetwork, endpointBId);
       if (!endpointA || !endpointB) return null;
-      if (endpointA.fusionId || endpointB.fusionId) return null;
       if (endpointA.status === 'faulty' || endpointB.status === 'faulty') return null;
+
+      const endpointALocalFusion = getLocalFusionForEndpoint(currentNetwork, boxId, endpointAId);
+      const endpointBLocalFusion = getLocalFusionForEndpoint(currentNetwork, boxId, endpointBId);
+      if (endpointALocalFusion || endpointBLocalFusion) return null;
 
       const duplicatedPair = currentNetwork.fusions.some(
         (fusion) =>
@@ -748,36 +789,37 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       return { connected: false, path: [], attenuation: 0 };
     }
 
-    const path = getFiberPath(fiberId);
-    let attenuation = path.reduce((sum, node) => sum + (node.fusion?.attenuation || 0), 0);
+    const visited = new Set<string>();
+    const path: string[] = [];
+    let attenuation = 0;
+    let hopCount = 0;
+    let currentFiberId: string | undefined = fiberId;
 
-    for (let i = 1; i < path.length; i++) {
-      const prev = path[i - 1]?.box;
-      const curr = path[i]?.box;
-      if (!prev || !curr) continue;
+    while (currentFiberId && !visited.has(currentFiberId)) {
+      visited.add(currentFiberId);
+      const currentFiber = getFiberById(currentNetwork, currentFiberId);
+      if (!currentFiber) break;
 
-      const cable = currentNetwork.cables.find(
-        (c) =>
-          (c.startPoint === prev.id && c.endPoint === curr.id) ||
-          (c.startPoint === curr.id && c.endPoint === prev.id)
-      );
-
-      if (cable) {
-        attenuation += calculateGponLoss(cable.length, { conectores: 2 });
-      } else {
-        const distance = calculateDistanceMeters(prev.position, curr.position);
-        attenuation += calculateGponLoss(distance);
+      const ownerLabel = getFiberOwnerLabel(currentNetwork, currentFiberId);
+      if (ownerLabel && path[path.length - 1] !== ownerLabel) {
+        path.push(ownerLabel);
       }
+
+      if (!currentFiber.connectedTo || !currentFiber.fusionId) break;
+
+      const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
+      if (fusion) attenuation += getFusionAttenuation(fusion);
+
+      currentFiberId = currentFiber.connectedTo;
+      hopCount += 1;
     }
 
-    const pathNames = path.map(node => node.box.name);
-
     return {
-      connected: path.length > 1,
-      path: pathNames,
+      connected: hopCount > 0,
+      path,
       attenuation: Number(attenuation.toFixed(3)),
     };
-  }, [state.currentNetwork, getFiberPath]);
+  }, [state.currentNetwork]);
 
   const importNetwork = useCallback((networkData: string) => {
     try {

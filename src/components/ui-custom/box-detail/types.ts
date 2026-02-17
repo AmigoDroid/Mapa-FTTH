@@ -25,5 +25,5 @@ export interface EntityPosition {
 export interface EntityOption {
   id: string;
   label: string;
-  type: 'box' | 'cable' | 'splitter';
+  type: 'cable' | 'splitter';
 }
