@@ -101,6 +101,13 @@ export interface OltUplink {
   speed: '1G' | '10G';
 }
 
+export interface OltAuxPort {
+  id: string;
+  index: number;
+  active: boolean;
+  role: 'BOOT' | 'CONSOLE';
+}
+
 export interface OltSlot {
   id: string;
   index: number;
@@ -113,6 +120,8 @@ export interface PopOlt {
   type: OltType;
   slots: OltSlot[];
   uplinks: OltUplink[];
+  bootPorts?: OltAuxPort[];
+  consolePorts?: OltAuxPort[];
 }
 
 export interface PopSwitchPort {
@@ -160,6 +169,7 @@ export interface PopFusion {
   endpointBId: string;
   fusionType: 'mechanical' | 'fusion' | 'connector';
   attenuation: number;
+  vlan?: number;
   dateCreated: string;
 }
 
@@ -169,6 +179,7 @@ export interface Pop {
   name: string;
   position: Position;
   status: 'active' | 'inactive' | 'maintenance' | 'projected';
+  fusionLayout?: Record<string, { x: number; y: number }>;
   dios: PopDio[];
   olts: PopOlt[];
   switches: PopSwitch[];

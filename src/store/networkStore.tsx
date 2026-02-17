@@ -20,6 +20,7 @@ import type {
   OltPon,
   OltGbic,
   OltUplink,
+  OltAuxPort,
   ReservePoint,
   Position, 
   ContinuityTest,
@@ -50,16 +51,22 @@ interface NetworkActions {
   updatePop: (popId: string, updates: Partial<Pop>) => void;
   removePop: (popId: string) => void;
   addDioToPop: (popId: string, dioData: Omit<PopDio, 'id'>) => PopDio | null;
-  addOltToPop: (popId: string, oltData: { name: string; type: PopOlt['type']; slotCount: number; ponsPerSlot: number; gbicModel: string; connector: OltGbic['connector']; txPowerDbm: number }) => PopOlt | null;
+  addOltToPop: (popId: string, oltData: { name: string; type: PopOlt['type']; uplinkPortCount: number; bootPortCount: number; consolePortCount: number }) => PopOlt | null;
+  addSlotToOlt: (popId: string, oltId: string, ponCount: number) => OltSlot | null;
+  activateOltPon: (popId: string, oltId: string, slotId: string, ponId: string, gbicModel: string, txPowerDbm: number) => void;
   addSwitchToPop: (popId: string, switchData: { name: string; portCount: number; uplinkPortCount: number }) => PopSwitch | null;
   addRouterToPop: (popId: string, routerData: { name: string; wanCount: number; lanCount: number }) => PopRouter | null;
+  removeDioFromPop: (popId: string, dioId: string) => void;
+  removeOltFromPop: (popId: string, oltId: string) => void;
+  removeSwitchFromPop: (popId: string, switchId: string) => void;
+  removeRouterFromPop: (popId: string, routerId: string) => void;
   toggleOltUplink: (popId: string, oltId: string, uplinkId: string) => void;
   addPonToOlt: (popId: string, oltId: string, slotId?: string) => OltPon | null;
   toggleOltPon: (popId: string, oltId: string, slotId: string, ponId: string) => void;
   toggleSwitchPort: (popId: string, switchId: string, portId: string, isUplink: boolean) => void;
   toggleRouterInterface: (popId: string, routerId: string, interfaceId: string) => void;
   addCableToPop: (popId: string, cableData: Omit<PopCable, 'id' | 'fibers'>) => PopCable | null;
-  connectPopEndpoints: (popId: string, endpointAId: string, endpointBId: string, fusionType?: PopFusion['fusionType'], noLoss?: boolean) => PopFusion | null;
+  connectPopEndpoints: (popId: string, endpointAId: string, endpointBId: string, fusionType?: PopFusion['fusionType'], noLoss?: boolean, vlan?: number) => PopFusion | null;
   disconnectPopFusion: (popId: string, fusionId: string) => void;
   updateBox: (boxId: string, updates: Partial<Box>) => void;
   removeBox: (boxId: string) => void;
@@ -454,6 +461,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     const pop: Pop = {
       ...popData,
       id: generateId(),
+      fusionLayout: {},
       dios: [],
       olts: [],
       switches: [],
@@ -718,40 +726,43 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     return dio;
   }, [state.currentNetwork, updatePop]);
 
-  const addOltToPop = useCallback((popId: string, oltData: { name: string; type: PopOlt['type']; slotCount: number; ponsPerSlot: number; gbicModel: string; connector: OltGbic['connector']; txPowerDbm: number }) => {
+  const addOltToPop = useCallback((popId: string, oltData: { name: string; type: PopOlt['type']; uplinkPortCount: number; bootPortCount: number; consolePortCount: number }) => {
     const currentNetwork = state.currentNetwork;
     if (!currentNetwork) return null;
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return null;
 
-    const slotCount = Math.max(1, oltData.slotCount || 1);
-    const ponsPerSlot = Math.max(1, oltData.ponsPerSlot || 1);
-    const slots: OltSlot[] = Array.from({ length: slotCount }, (_, slotIdx) => ({
+    const uplinkPortCount = Math.max(1, oltData.uplinkPortCount || 2);
+    const bootPortCount = Math.max(0, oltData.bootPortCount || 0);
+    const consolePortCount = Math.max(0, oltData.consolePortCount || 0);
+    const uplinks: OltUplink[] = Array.from({ length: uplinkPortCount }, (_, idx) => ({
       id: generateId(),
-      index: slotIdx + 1,
-      pons: Array.from({ length: ponsPerSlot }, (_, ponIdx) => ({
-        id: generateId(),
-        index: ponIdx + 1,
-        active: true,
-        gbic: {
-          id: generateId(),
-          model: oltData.gbicModel,
-          connector: oltData.connector,
-          txPowerDbm: oltData.txPowerDbm,
-        },
-      })),
+      index: idx + 1,
+      active: true,
+      connector: 'SFP+',
+      speed: '10G',
     }));
-    const uplinks: OltUplink[] = [
-      { id: generateId(), index: 1, active: true, connector: 'SFP+', speed: '10G' },
-      { id: generateId(), index: 2, active: true, connector: 'SFP+', speed: '10G' },
-    ];
+    const bootPorts: OltAuxPort[] = Array.from({ length: bootPortCount }, (_, idx) => ({
+      id: generateId(),
+      index: idx + 1,
+      active: true,
+      role: 'BOOT',
+    }));
+    const consolePorts: OltAuxPort[] = Array.from({ length: consolePortCount }, (_, idx) => ({
+      id: generateId(),
+      index: idx + 1,
+      active: true,
+      role: 'CONSOLE',
+    }));
 
     const olt: PopOlt = {
       id: generateId(),
       name: oltData.name,
       type: oltData.type,
-      slots,
+      slots: [],
       uplinks,
+      bootPorts,
+      consolePorts,
     };
 
     updatePop(popId, { olts: [...pop.olts, olt] });
@@ -822,6 +833,70 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     return router;
   }, [state.currentNetwork, updatePop]);
 
+  const removeDioFromPop = useCallback((popId: string, dioId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const endpointPrefix = `dio:${dioId}:`;
+    const entityKey = `dio:${dioId}`;
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    delete nextFusionLayout[entityKey];
+    updatePop(popId, {
+      dios: pop.dios.filter((item) => item.id !== dioId),
+      fusions: pop.fusions.filter((fusion) => !fusion.endpointAId.startsWith(endpointPrefix) && !fusion.endpointBId.startsWith(endpointPrefix)),
+      fusionLayout: nextFusionLayout,
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const removeOltFromPop = useCallback((popId: string, oltId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const endpointPrefix = `olt:${oltId}:`;
+    const entityKey = `olt:${oltId}`;
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    delete nextFusionLayout[entityKey];
+    updatePop(popId, {
+      olts: pop.olts.filter((item) => item.id !== oltId),
+      fusions: pop.fusions.filter((fusion) => !fusion.endpointAId.startsWith(endpointPrefix) && !fusion.endpointBId.startsWith(endpointPrefix)),
+      fusionLayout: nextFusionLayout,
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const removeSwitchFromPop = useCallback((popId: string, switchId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const endpointPrefix = `switch:${switchId}:`;
+    const entityKey = `switch:${switchId}`;
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    delete nextFusionLayout[entityKey];
+    updatePop(popId, {
+      switches: (pop.switches || []).filter((item) => item.id !== switchId),
+      fusions: pop.fusions.filter((fusion) => !fusion.endpointAId.startsWith(endpointPrefix) && !fusion.endpointBId.startsWith(endpointPrefix)),
+      fusionLayout: nextFusionLayout,
+    });
+  }, [state.currentNetwork, updatePop]);
+
+  const removeRouterFromPop = useCallback((popId: string, routerId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const endpointPrefix = `router:${routerId}:`;
+    const entityKey = `router:${routerId}`;
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    delete nextFusionLayout[entityKey];
+    updatePop(popId, {
+      routers: (pop.routers || []).filter((item) => item.id !== routerId),
+      fusions: pop.fusions.filter((fusion) => !fusion.endpointAId.startsWith(endpointPrefix) && !fusion.endpointBId.startsWith(endpointPrefix)),
+      fusionLayout: nextFusionLayout,
+    });
+  }, [state.currentNetwork, updatePop]);
+
   const toggleOltUplink = useCallback((popId: string, oltId: string, uplinkId: string) => {
     const currentNetwork = state.currentNetwork;
     if (!currentNetwork) return;
@@ -886,6 +961,76 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return createdPon;
+  }, [state.currentNetwork, updatePop]);
+
+  const addSlotToOlt = useCallback((popId: string, oltId: string, ponCount: number) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return null;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return null;
+    const olt = pop.olts.find((item) => item.id === oltId);
+    if (!olt) return null;
+
+    const safePonCount = Math.max(1, ponCount);
+    const slot: OltSlot = {
+      id: generateId(),
+      index: olt.slots.length + 1,
+      pons: Array.from({ length: safePonCount }, (_, idx) => ({
+        id: generateId(),
+        index: idx + 1,
+        active: false,
+        gbic: {
+          id: generateId(),
+          model: '',
+          connector: 'UPC',
+          txPowerDbm: 0,
+        },
+      })),
+    };
+
+    updatePop(popId, {
+      olts: pop.olts.map((item) => (item.id === oltId ? { ...item, slots: [...item.slots, slot] } : item)),
+    });
+
+    return slot;
+  }, [state.currentNetwork, updatePop]);
+
+  const activateOltPon = useCallback((popId: string, oltId: string, slotId: string, ponId: string, gbicModel: string, txPowerDbm: number) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) return;
+    const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
+    if (!pop) return;
+    const olt = pop.olts.find((item) => item.id === oltId);
+    if (!olt) return;
+
+    updatePop(popId, {
+      olts: pop.olts.map((item) => {
+        if (item.id !== oltId) return item;
+        return {
+          ...item,
+          slots: item.slots.map((slot) => {
+            if (slot.id !== slotId) return slot;
+            return {
+              ...slot,
+              pons: slot.pons.map((pon) =>
+                pon.id === ponId
+                  ? {
+                      ...pon,
+                      active: true,
+                      gbic: {
+                        ...pon.gbic,
+                        model: gbicModel.trim(),
+                        connector: 'UPC',
+                        txPowerDbm,
+                      },
+                    }
+                  : pon
+              ),
+            };
+          }),
+        };
+      }),
+    });
   }, [state.currentNetwork, updatePop]);
 
   const toggleOltPon = useCallback((popId: string, oltId: string, slotId: string, ponId: string) => {
@@ -975,7 +1120,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     return cable;
   }, [state.currentNetwork, updatePop]);
 
-  const connectPopEndpoints = useCallback((popId: string, endpointAId: string, endpointBId: string, fusionType: PopFusion['fusionType'] = 'fusion', noLoss: boolean = false) => {
+  const connectPopEndpoints = useCallback((popId: string, endpointAId: string, endpointBId: string, fusionType: PopFusion['fusionType'] = 'fusion', noLoss: boolean = false, vlan?: number) => {
     const currentNetwork = state.currentNetwork;
     if (!currentNetwork) return null;
     if (endpointAId === endpointBId) return null;
@@ -999,6 +1144,20 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         if (Number.isNaN(uplinkIndex)) return true;
         const uplink = olt.uplinks.find((item) => item.index === uplinkIndex);
         return !uplink || !uplink.active;
+      }
+
+      if (endpointId.includes(':b:')) {
+        const portIndex = Number.parseInt(parts[3] || '', 10);
+        if (Number.isNaN(portIndex)) return true;
+        const port = (olt.bootPorts || []).find((item) => item.index === portIndex);
+        return !port || !port.active;
+      }
+
+      if (endpointId.includes(':c:')) {
+        const portIndex = Number.parseInt(parts[3] || '', 10);
+        if (Number.isNaN(portIndex)) return true;
+        const port = (olt.consolePorts || []).find((item) => item.index === portIndex);
+        return !port || !port.active;
       }
 
       const slotIndex = Number.parseInt(parts[3] || '', 10);
@@ -1050,6 +1209,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       endpointBId,
       fusionType,
       attenuation: noLoss ? 0 : fusionType === 'connector' ? 0.2 : fusionType === 'mechanical' ? 0.2 : 0.1,
+      vlan: typeof vlan === 'number' ? vlan : undefined,
       dateCreated: new Date().toISOString(),
     };
 
@@ -1471,8 +1631,25 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         cities: networkRaw.cities || [],
         pops: (networkRaw.pops || []).map((pop) => ({
           ...pop,
+          fusionLayout: pop.fusionLayout || {},
           olts: (pop.olts || []).map((olt) => ({
             ...olt,
+            bootPorts: (olt.bootPorts || []).map((port, idx) => ({
+              ...port,
+              index: port.index || idx + 1,
+              active: typeof (port as OltAuxPort & { active?: boolean }).active === 'boolean'
+                ? (port as OltAuxPort & { active?: boolean }).active!
+                : true,
+              role: 'BOOT',
+            })),
+            consolePorts: (olt.consolePorts || []).map((port, idx) => ({
+              ...port,
+              index: port.index || idx + 1,
+              active: typeof (port as OltAuxPort & { active?: boolean }).active === 'boolean'
+                ? (port as OltAuxPort & { active?: boolean }).active!
+                : true,
+              role: 'CONSOLE',
+            })),
             uplinks: (olt.uplinks || []).map((uplink, uplinkIdx) => ({
               ...uplink,
               index: uplink.index || uplinkIdx + 1,
@@ -1503,7 +1680,13 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
                 index: pon.index || ponIndex + 1,
                 active: typeof (pon as OltPon & { active?: boolean }).active === 'boolean'
                   ? (pon as OltPon & { active?: boolean }).active!
-                  : true,
+                  : false,
+                gbic: {
+                  id: pon.gbic?.id || generateId(),
+                  model: pon.gbic?.model || '',
+                  connector: 'UPC',
+                  txPowerDbm: typeof pon.gbic?.txPowerDbm === 'number' ? pon.gbic.txPowerDbm : 0,
+                },
                 })),
             })),
           })),
@@ -1593,8 +1776,14 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     removePop,
     addDioToPop,
     addOltToPop,
+    addSlotToOlt,
+    activateOltPon,
     addSwitchToPop,
     addRouterToPop,
+    removeDioFromPop,
+    removeOltFromPop,
+    removeSwitchFromPop,
+    removeRouterFromPop,
     toggleOltUplink,
     addPonToOlt,
     toggleOltPon,

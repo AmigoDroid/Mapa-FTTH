@@ -1,14 +1,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
-import { Dialog, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { X } from 'lucide-react';
+import { Pencil, Scissors, Trash2, X } from 'lucide-react';
 import { FullscreenModalShell } from './FullscreenModalShell';
 import type { Pop, PopFusion } from '@/types/ftth';
 
@@ -29,10 +29,12 @@ type EndpointNode = {
   entityId: string;
   label: string;
   shortLabel: string;
-  endpointType: 'dio' | 'fiber' | 'pon' | 'uplink' | 'switch-port' | 'router-iface';
+  endpointType: 'dio' | 'fiber' | 'pon' | 'uplink' | 'olt-aux' | 'switch-port' | 'router-iface';
   slotId?: string;
   ponId?: string;
   uplinkId?: string;
+  oltAuxPortId?: string;
+  oltAuxRole?: 'BOOT' | 'CONSOLE';
   portId?: string;
   isUplink?: boolean;
   routerInterfaceId?: string;
@@ -40,17 +42,40 @@ type EndpointNode = {
   active?: boolean;
 };
 
+type LinkConfigState = {
+  open: boolean;
+  fromId: string;
+  toId: string;
+  vlan: string;
+  fusionId?: string;
+};
+
+type PonConfigState = {
+  open: boolean;
+  oltId: string;
+  slotId: string;
+  ponId: string;
+  gbicModel: string;
+  txPowerDbm: string;
+};
+
 export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const {
     currentNetwork,
+    updatePop,
     addDioToPop,
     addOltToPop,
-    addPonToOlt,
+    addSlotToOlt,
+    activateOltPon,
     toggleOltUplink,
     addSwitchToPop,
     toggleSwitchPort,
     addRouterToPop,
     toggleRouterInterface,
+    removeDioFromPop,
+    removeOltFromPop,
+    removeSwitchFromPop,
+    removeRouterFromPop,
     addCableToPop,
     connectPopEndpoints,
     disconnectPopFusion,
@@ -63,8 +88,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [dioPorts, setDioPorts] = useState(24);
   const [oltName, setOltName] = useState('');
   const [oltType, setOltType] = useState<'compact' | 'chassi'>('chassi');
+  const [oltUplinkPorts, setOltUplinkPorts] = useState(2);
+  const [oltBootPorts, setOltBootPorts] = useState(1);
+  const [oltConsolePorts, setOltConsolePorts] = useState(1);
   const [gbicModel, setGbicModel] = useState('C++');
-  const [gbicConnector, setGbicConnector] = useState<'APC' | 'UPC' | 'APC-UPC'>('APC-UPC');
   const [txPowerDbm, setTxPowerDbm] = useState(3);
 
   const [switchName, setSwitchName] = useState('');
@@ -86,8 +113,14 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [dragState, setDragState] = useState<{ fromId: string; x: number; y: number } | null>(null);
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
   const [boardZoom, setBoardZoom] = useState(1);
+  const [fusionViewportHeight, setFusionViewportHeight] = useState(520);
+  const [linkConfig, setLinkConfig] = useState<LinkConfigState>({ open: false, fromId: '', toId: '', vlan: '100' });
+  const [ponConfig, setPonConfig] = useState<PonConfigState>({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: 'C++', txPowerDbm: '3' });
+  const [sceneRenderTick, setSceneRenderTick] = useState(0);
   const sceneRef = useRef<HTMLDivElement | null>(null);
+  const fusionViewportRef = useRef<HTMLDivElement | null>(null);
   const endpointRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const nodePositionsRef = useRef<Record<string, { x: number; y: number }>>({});
 
   const entityOptions = useMemo<PopEntity[]>(() => {
     return [
@@ -125,6 +158,32 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
           endpointType: 'uplink',
           uplinkId: uplink.id,
           active: uplink.active,
+        });
+      });
+
+      (olt.bootPorts || []).forEach((port) => {
+        items.push({
+          id: `olt:${olt.id}:b:${port.index}`,
+          entityId: `olt:${olt.id}`,
+          label: `OLT ${olt.name} - BOOT ${port.index}`,
+          shortLabel: `B${port.index}`,
+          endpointType: 'olt-aux',
+          oltAuxPortId: port.id,
+          oltAuxRole: 'BOOT',
+          active: port.active,
+        });
+      });
+
+      (olt.consolePorts || []).forEach((port) => {
+        items.push({
+          id: `olt:${olt.id}:c:${port.index}`,
+          entityId: `olt:${olt.id}`,
+          label: `OLT ${olt.name} - CONSOLE ${port.index}`,
+          shortLabel: `C${port.index}`,
+          endpointType: 'olt-aux',
+          oltAuxPortId: port.id,
+          oltAuxRole: 'CONSOLE',
+          active: port.active,
         });
       });
 
@@ -208,6 +267,11 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     return acc;
   }, {}), [endpoints]);
 
+  const endpointById = useMemo(() => endpoints.reduce<Record<string, EndpointNode>>((acc, endpoint) => {
+    acc[endpoint.id] = endpoint;
+    return acc;
+  }, {}), [endpoints]);
+
   const totalFusionLoss = useMemo(() => currentPop.fusions.reduce((sum, fusion) => sum + (fusion.attenuation || 0), 0), [currentPop.fusions]);
 
   const avgTxDbm = useMemo(() => {
@@ -229,27 +293,53 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     const positions = Object.values(nodePositions);
     const maxX = positions.length > 0 ? Math.max(...positions.map((p) => p.x)) : 0;
     const maxY = positions.length > 0 ? Math.max(...positions.map((p) => p.y)) : 0;
-    return { width: Math.max(2200, maxX + 500), height: Math.max(1400, maxY + 420) };
+    return { width: Math.max(1100, maxX + 280), height: Math.max(700, maxY + 220) };
   }, [nodePositions]);
 
   useEffect(() => {
     if (!open || entityOptions.length === 0) return;
     setNodePositions((prev) => {
       const next = { ...prev };
-      const cols = 4;
+      const savedLayout = currentPop.fusionLayout || {};
+      const cols = 3;
       entityOptions.forEach((entity, idx) => {
+        if (savedLayout[entity.id]) {
+          next[entity.id] = savedLayout[entity.id]!;
+          return;
+        }
         if (next[entity.id]) return;
         const col = idx % cols;
         const row = Math.floor(idx / cols);
-        next[entity.id] = { x: 30 + col * 520, y: 32 + row * 320 };
+        next[entity.id] = { x: 26 + col * 360, y: 24 + row * 220 };
       });
       return next;
     });
-  }, [open, entityOptions]);
+  }, [open, entityOptions, currentPop.fusionLayout]);
+
+  useEffect(() => {
+    nodePositionsRef.current = nodePositions;
+  }, [nodePositions]);
 
   useEffect(() => {
     if (!open) setSelectedEndpointId(null);
   }, [open]);
+
+  useEffect(() => {
+    const onResize = () => setSceneRenderTick((prev) => prev + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const maxByWindow = Math.max(380, window.innerHeight - 220);
+    setFusionViewportHeight((prev) => Math.min(prev, maxByWindow));
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const raf = window.requestAnimationFrame(() => setSceneRenderTick((prev) => prev + 1));
+    return () => window.cancelAnimationFrame(raf);
+  }, [open, boardZoom, nodePositions, currentPop.fusions.length, endpoints.length]);
 
   const getScenePoint = (clientX: number, clientY: number) => {
     const scene = sceneRef.current;
@@ -332,6 +422,21 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     return links;
   }, [currentPop.fusions]);
 
+  const endpointVlanMap = useMemo(() => {
+    const map = new Map<string, number[]>();
+    currentPop.fusions.forEach((fusion) => {
+      if (typeof fusion.vlan !== 'number') return;
+      const pushVlan = (endpointId: string) => {
+        const list = map.get(endpointId) || [];
+        if (!list.includes(fusion.vlan!)) list.push(fusion.vlan!);
+        map.set(endpointId, list);
+      };
+      pushVlan(fusion.endpointAId);
+      pushVlan(fusion.endpointBId);
+    });
+    return map;
+  }, [currentPop.fusions]);
+
   const highlightedTrace = useMemo(() => {
     const fusionIds = new Set<string>();
     const endpointIds = new Set<string>();
@@ -362,6 +467,14 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     setNodeDragState({ entityId, offsetX: point.x - pos.x, offsetY: point.y - pos.y });
   };
 
+  const getEntityBounds = (entityId: string) => {
+    if (entityId.startsWith('olt:')) return { width: 760, height: 390 };
+    if (entityId.startsWith('switch:')) return { width: 640, height: 230 };
+    if (entityId.startsWith('router:')) return { width: 620, height: 230 };
+    if (entityId.startsWith('dio:')) return { width: 420, height: 180 };
+    return { width: 360, height: 180 };
+  };
+
   const startEndpointDrag = (endpointId: string, disabled: boolean) => {
     if (disabled) return;
     const pos = getEndpointPosition(endpointId);
@@ -375,8 +488,32 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       setDragState(null);
       return;
     }
-    connectPopEndpoints(currentPop.id, dragState.fromId, targetId, fusionType, noLoss);
+    const fromEndpoint = endpoints.find((item) => item.id === dragState.fromId);
+    const toEndpoint = endpoints.find((item) => item.id === targetId);
+    const requiresVlan = (endpoint?: EndpointNode) => endpoint && endpoint.endpointType !== 'dio' && endpoint.endpointType !== 'fiber';
+    let vlan: number | undefined;
+    if (requiresVlan(fromEndpoint) || requiresVlan(toEndpoint)) {
+      setLinkConfig({
+        open: true,
+        fromId: dragState.fromId,
+        toId: targetId,
+        vlan: '100',
+      });
+      setDragState(null);
+      return;
+    }
+    connectPopEndpoints(currentPop.id, dragState.fromId, targetId, fusionType, noLoss, vlan);
     setDragState(null);
+  };
+
+  const persistFusionLayout = () => {
+    const keys = new Set(entityOptions.map((entity) => entity.id));
+    const normalized = Object.entries(nodePositionsRef.current).reduce<Record<string, { x: number; y: number }>>((acc, [key, value]) => {
+      if (!keys.has(key)) return acc;
+      acc[key] = value;
+      return acc;
+    }, {});
+    updatePop(currentPop.id, { fusionLayout: normalized });
   };
 
   useEffect(() => {
@@ -386,16 +523,18 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       if (!point) return;
       if (dragState) setDragState((prev) => (prev ? { ...prev, x: point.x, y: point.y } : null));
       if (nodeDragState) {
+        const bounds = getEntityBounds(nodeDragState.entityId);
         setNodePositions((prev) => ({
           ...prev,
           [nodeDragState.entityId]: {
-            x: Math.max(0, Math.min(sceneSize.width - 400, point.x - nodeDragState.offsetX)),
-            y: Math.max(0, Math.min(sceneSize.height - 180, point.y - nodeDragState.offsetY)),
+            x: Math.max(0, Math.min(sceneSize.width - bounds.width, point.x - nodeDragState.offsetX)),
+            y: Math.max(0, point.y - nodeDragState.offsetY),
           },
         }));
       }
     };
     const onUp = () => {
+      if (nodeDragState) persistFusionLayout();
       setNodeDragState(null);
       setDragState(null);
     };
@@ -407,30 +546,92 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     };
   }, [nodeDragState, dragState, sceneSize.width, sceneSize.height, boardZoom]);
 
+  const handleSceneWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -0.08 : 0.08;
+    setBoardZoom((prev) => Math.max(0.45, Math.min(2.2, Number((prev + direction).toFixed(2)))));
+    setSceneRenderTick((prev) => prev + 1);
+  };
+
+  const handleActivatePon = (endpoint: EndpointNode) => {
+    if (!endpoint.slotId || !endpoint.ponId) return;
+    const oltId = endpoint.entityId.replace('olt:', '');
+    const olt = currentPop.olts.find((item) => item.id === oltId);
+    const slot = olt?.slots.find((item) => item.id === endpoint.slotId);
+    const pon = slot?.pons.find((item) => item.id === endpoint.ponId);
+    setPonConfig({
+      open: true,
+      oltId,
+      slotId: endpoint.slotId,
+      ponId: endpoint.ponId,
+      gbicModel: pon?.gbic.model || gbicModel || 'C++',
+      txPowerDbm: `${pon?.gbic.txPowerDbm ?? txPowerDbm ?? 3}`,
+    });
+  };
+
+  const handleSaveLinkConfig = () => {
+    const parsed = Number.parseInt(linkConfig.vlan, 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 4094) return;
+    if (linkConfig.fusionId) {
+      updatePop(currentPop.id, {
+        fusions: currentPop.fusions.map((fusion) => (fusion.id === linkConfig.fusionId ? { ...fusion, vlan: parsed } : fusion)),
+      });
+    } else {
+      connectPopEndpoints(currentPop.id, linkConfig.fromId, linkConfig.toId, fusionType, noLoss, parsed);
+    }
+    setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' });
+  };
+
+  const handleSavePonConfig = () => {
+    const txValue = Number.parseFloat(ponConfig.txPowerDbm);
+    if (!ponConfig.gbicModel.trim() || Number.isNaN(txValue)) return;
+    activateOltPon(currentPop.id, ponConfig.oltId, ponConfig.slotId, ponConfig.ponId, ponConfig.gbicModel.trim(), txValue);
+    setPonConfig({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: gbicModel || 'C++', txPowerDbm: `${txPowerDbm || 3}` });
+  };
+
+  const handleOpenFusionEdit = (fusion: PopFusion) => {
+    setLinkConfig({
+      open: true,
+      fromId: fusion.endpointAId,
+      toId: fusion.endpointBId,
+      vlan: `${fusion.vlan ?? 100}`,
+      fusionId: fusion.id,
+    });
+  };
+
   const getPortDisplay = (endpoint: EndpointNode) => endpoint.shortLabel.match(/\d+/)?.[0] || endpoint.shortLabel;
 
   const renderPortButton = (endpoint: EndpointNode, className?: string, displayLabel?: string) => {
     const isDisabled = endpoint.active === false;
     const isSelected = selectedEndpointId === endpoint.id;
     const isOnTrace = highlightedTrace.endpointIds.has(endpoint.id);
+    const vlans = endpointVlanMap.get(endpoint.id) || [];
+    const vlanLabel = vlans.length === 1 ? `VLAN: ${vlans[0]}` : vlans.length > 1 ? `VLAN: ${vlans[0]}+` : null;
     return (
-      <button
-        key={endpoint.id}
-        ref={(node) => { endpointRefs.current[endpoint.id] = node; }}
-        type="button"
-        onMouseDown={(event) => { event.preventDefault(); startEndpointDrag(endpoint.id, isDisabled); }}
-        onMouseUp={() => finishEndpointDrag(endpoint.id, isDisabled)}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setSelectedEndpointId((prev) => (prev === endpoint.id ? null : endpoint.id));
-        }}
-        disabled={isDisabled}
-        className={`${className || `h-7 px-2 rounded border text-[11px] ${isDisabled ? 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed' : 'bg-white hover:bg-slate-50 border-slate-300 cursor-pointer'}`} ${isSelected ? 'ring-2 ring-amber-400 ring-offset-1' : ''} ${!isSelected && isOnTrace ? 'ring-1 ring-cyan-400/80 ring-offset-1' : ''}`}
-        title={endpoint.label}
-      >
-        {displayLabel || endpoint.shortLabel}
-      </button>
+      <div key={endpoint.id} className="relative inline-flex">
+        {vlanLabel && (
+          <span className="absolute -top-4 left-1/2 -translate-x-1/2 h-3.5 px-1 rounded border border-cyan-300 bg-cyan-50 text-cyan-700 text-[8px] leading-[12px] whitespace-nowrap">
+            {vlanLabel}
+          </span>
+        )}
+        <button
+          ref={(node) => { endpointRefs.current[endpoint.id] = node; }}
+          type="button"
+          onMouseDown={(event) => { event.preventDefault(); startEndpointDrag(endpoint.id, isDisabled); }}
+          onMouseUp={() => finishEndpointDrag(endpoint.id, isDisabled)}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setSelectedEndpointId((prev) => (prev === endpoint.id ? null : endpoint.id));
+          }}
+          disabled={isDisabled}
+          className={`${className || `h-7 px-2 rounded border text-[11px] ${isDisabled ? 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed' : 'bg-white hover:bg-slate-50 border-slate-300 cursor-pointer'}`} ${isSelected ? 'ring-2 ring-amber-400 ring-offset-1' : ''} ${!isSelected && isOnTrace ? 'ring-1 ring-cyan-400/80 ring-offset-1' : ''}`}
+          title={endpoint.label}
+        >
+          {displayLabel || endpoint.shortLabel}
+        </button>
+      </div>
     );
   };
 
@@ -458,7 +659,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
           <Tabs defaultValue="infra" className="space-y-4">
             <TabsList className="w-full max-w-[860px] flex gap-2 overflow-x-auto">
               <TabsTrigger className="shrink-0 whitespace-nowrap" value="infra">Infra POP</TabsTrigger>
-              <TabsTrigger className="shrink-0 whitespace-nowrap" value="fusions">Fusoes POP</TabsTrigger>
+              <TabsTrigger className="shrink-0 whitespace-nowrap" value="fusions">Rack POP</TabsTrigger>
               <TabsTrigger className="shrink-0 whitespace-nowrap" value="signal">Sinal/Perda</TabsTrigger>
             </TabsList>
 
@@ -496,17 +697,28 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 </TabsContent>
 
                 <TabsContent value="olt" className="space-y-3 border rounded-lg p-4">
-                  <h4 className="font-semibold text-sm">Cadastrar OLT (inicia com 1 slot, 1 PON, 1 GBIC e uplinks)</h4>
+                  <h4 className="font-semibold text-sm">Cadastrar OLT</h4>
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     <div><Label>Nome</Label><Input value={oltName} onChange={(e) => setOltName(e.target.value)} placeholder="OLT POP-01" /></div>
                     <div><Label>Tipo</Label><Select value={oltType} onValueChange={(v: 'compact' | 'chassi') => setOltType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="compact">Compacta</SelectItem><SelectItem value="chassi">Chassi</SelectItem></SelectContent></Select></div>
-                    <div><Label>GBIC</Label><Input value={gbicModel} onChange={(e) => setGbicModel(e.target.value)} placeholder="C++" /></div>
-                    <div><Label>Sinal GBIC (dBm)</Label><Input type="number" value={txPowerDbm} onChange={(e) => setTxPowerDbm(Number.parseFloat(e.target.value || '0'))} /></div>
+                    <div><Label>Classe GBIC padrao</Label><Input value={gbicModel} onChange={(e) => setGbicModel(e.target.value)} placeholder="C++" /></div>
+                    <div><Label>Tx padrao (dBm)</Label><Input type="number" value={txPowerDbm} onChange={(e) => setTxPowerDbm(Number.parseFloat(e.target.value || '0'))} /></div>
                   </div>
-                  <div className="md:max-w-[260px]"><Label>Conector</Label><Select value={gbicConnector} onValueChange={(v: 'APC' | 'UPC' | 'APC-UPC') => setGbicConnector(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="APC">APC</SelectItem><SelectItem value="UPC">UPC</SelectItem><SelectItem value="APC-UPC">APC-UPC</SelectItem></SelectContent></Select></div>
+                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    <div><Label>Portas Uplink</Label><Input type="number" min={1} value={oltUplinkPorts} onChange={(e) => setOltUplinkPorts(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                    <div><Label>Portas BOOT</Label><Input type="number" min={0} value={oltBootPorts} onChange={(e) => setOltBootPorts(Math.max(0, Number.parseInt(e.target.value || '0', 10)))} /></div>
+                    <div><Label>Portas CONSOLE</Label><Input type="number" min={0} value={oltConsolePorts} onChange={(e) => setOltConsolePorts(Math.max(0, Number.parseInt(e.target.value || '0', 10)))} /></div>
+                  </div>
+                  <p className="text-xs text-zinc-500">Conector do PON fixo em UPC.</p>
                   <Button onClick={() => {
                     if (!oltName.trim()) return;
-                    const created = addOltToPop(currentPop.id, { name: oltName.trim(), type: oltType, slotCount: 1, ponsPerSlot: 1, gbicModel: gbicModel.trim() || 'C++', connector: gbicConnector, txPowerDbm });
+                    const created = addOltToPop(currentPop.id, {
+                      name: oltName.trim(),
+                      type: oltType,
+                      uplinkPortCount: oltUplinkPorts,
+                      bootPortCount: oltBootPorts,
+                      consolePortCount: oltConsolePorts,
+                    });
                     if (!created) return;
                     setOltName('');
                   }}>Adicionar OLT</Button>
@@ -566,23 +778,39 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setBoardZoom((prev) => Math.max(0.5, Number((prev - 0.1).toFixed(2))))}>-</Button><Button variant="outline" size="sm" onClick={() => setBoardZoom(1)}>100%</Button><Button variant="outline" size="sm" onClick={() => setBoardZoom((prev) => Math.min(1.8, Number((prev + 0.1).toFixed(2))))}>+</Button></div>
                 <div className="text-xs text-gray-500 bg-white border rounded px-2 py-2">Arraste blocos e ligue porta a porta.</div>
               </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-zinc-500">Altura da area:</span>
+                <Button variant="outline" size="sm" onClick={() => setFusionViewportHeight((prev) => Math.max(380, prev - 80))}>- altura</Button>
+                <Button variant="outline" size="sm" onClick={() => setFusionViewportHeight((prev) => Math.min(Math.max(380, window.innerHeight - 220), prev + 80))}>+ altura</Button>
+                <span className="text-zinc-500">{fusionViewportHeight}px</span>
+              </div>
 
               <div className="border rounded-xl overflow-hidden bg-zinc-100">
-                <div className="h-[calc(95vh-280px)] min-h-[560px] overflow-auto">
+                <div
+                  ref={fusionViewportRef}
+                  className="relative min-h-[380px] overflow-auto"
+                  style={{ height: `${fusionViewportHeight}px` }}
+                  onScroll={() => setSceneRenderTick((prev) => prev + 1)}
+                  onWheel={handleSceneWheel}
+                  title="Use Ctrl + roda do mouse para zoom"
+                >
+                  <div className="pointer-events-none absolute inset-y-0 left-[92px] z-30 w-[18px] rounded-full border border-zinc-500/50 bg-gradient-to-b from-zinc-200 to-zinc-300 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.35)]">
+                    <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[9px] font-semibold text-zinc-600">ORG L</div>
+                  </div>
+                  <div className="pointer-events-none absolute inset-y-0 right-[92px] z-30 w-[18px] rounded-full border border-zinc-500/50 bg-gradient-to-b from-zinc-200 to-zinc-300 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.35)]">
+                    <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[9px] font-semibold text-zinc-600">ORG R</div>
+                  </div>
                   <div
                     ref={sceneRef}
                     className="relative origin-top-left"
                     style={{ width: `${sceneSize.width}px`, height: `${sceneSize.height}px`, transform: `scale(${boardZoom})` }}
+                    data-render-tick={sceneRenderTick}
                     onMouseDown={(event) => {
-                      if (event.target === event.currentTarget) setSelectedEndpointId(null);
+                      if (event.target === event.currentTarget) {
+                        setSelectedEndpointId(null);
+                      }
                     }}
                   >
-                    <div className="absolute top-0 bottom-0 left-[92px] z-10 w-[18px] rounded-full border border-zinc-500/50 bg-gradient-to-b from-zinc-200 to-zinc-300 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.35)]">
-                      <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[9px] font-semibold text-zinc-600">ORG L</div>
-                    </div>
-                    <div className="absolute top-0 bottom-0 z-10 w-[18px] rounded-full border border-zinc-500/50 bg-gradient-to-b from-zinc-200 to-zinc-300 shadow-[inset_0_0_0_2px_rgba(255,255,255,0.35)]" style={{ left: `${sceneSize.width - 101}px` }}>
-                      <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[9px] font-semibold text-zinc-600">ORG R</div>
-                    </div>
                     <div className="relative z-10">
                     {entityOptions.map((entity) => {
                       const pos = nodePositions[entity.id] || { x: 24, y: 24 };
@@ -596,23 +824,72 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                           <div key={entity.id} className="absolute w-[760px] rounded-xl border border-zinc-900 bg-gradient-to-b from-zinc-100 to-zinc-300 shadow-[0_12px_28px_rgba(0,0,0,0.45)]" style={{ left: pos.x, top: pos.y }}>
                             <div className="h-4 rounded-t-xl bg-gradient-to-b from-zinc-900 to-zinc-700 cursor-move select-none" onMouseDown={(event) => { event.preventDefault(); startNodeDrag(entity.id, event); }} />
                             <div className="h-1.5 bg-zinc-800/85 shadow-inner" />
-                            <div className="px-3 py-2 border-x-4 border-b border-zinc-900 font-semibold text-sm select-none text-zinc-800 bg-gradient-to-b from-white to-zinc-100">
-                              OLT CHASSI - {entity.label}
+                            <div className="px-3 py-2 border-x-4 border-b border-zinc-900 font-semibold text-sm select-none text-zinc-800 bg-gradient-to-b from-white to-zinc-100 flex items-center justify-between gap-2">
+                              <span>OLT CHASSI - {entity.label}</span>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 px-2"
+                                  onClick={() => {
+                                    const input = window.prompt('Quantas PONs no novo slot?', '16');
+                                    if (input === null) return;
+                                    const ponCount = Number.parseInt(input, 10);
+                                    if (Number.isNaN(ponCount) || ponCount < 1) return;
+                                    addSlotToOlt(currentPop.id, olt.id, ponCount);
+                                  }}
+                                >
+                                  + SLOT
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-6 px-2"
+                                  onClick={() => {
+                                    if (!window.confirm(`Apagar OLT "${entity.label}"?`)) return;
+                                    removeOltFromPop(currentPop.id, olt.id);
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
                             </div>
-                            <div className="px-3 py-2 border-x-4 border-b border-zinc-900 bg-gradient-to-b from-zinc-50 to-zinc-100">
+                            <div className="px-3 py-2 border-x-4 border-b border-zinc-900 bg-gradient-to-b from-zinc-50 to-zinc-100 space-y-2">
                               <div className="text-[10px] text-zinc-600 mb-2">UPLINKS</div>
                               <div className="flex flex-wrap gap-2">
                                 {entityEndpoints.filter((endpoint) => endpoint.endpointType === 'uplink').map((endpoint) => (
                                   <div key={endpoint.id} className="flex items-center gap-1 rounded border border-zinc-300 bg-white/90 px-1.5 py-1 shadow-sm">
-                                    {renderPortButton(endpoint, `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                    {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
                                     <button
                                       type="button"
-                                      className={`h-2.5 w-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
+                                      className={`h-2 w-2 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                       onClick={() => endpoint.uplinkId && toggleOltUplink(currentPop.id, olt.id, endpoint.uplinkId)}
                                       title={endpoint.active ? 'Desativar uplink' : 'Ativar uplink'}
                                     />
                                   </div>
                                 ))}
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                <div>
+                                  <div className="text-[10px] text-zinc-600 mb-1">BOOT</div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {entityEndpoints.filter((endpoint) => endpoint.endpointType === 'olt-aux' && endpoint.oltAuxRole === 'BOOT').map((endpoint) => (
+                                      <div key={endpoint.id} className="rounded border border-zinc-300 bg-white/90 px-1 py-1 shadow-sm">
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-amber-300 border-amber-600 text-amber-900 hover:bg-amber-400' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-[10px] text-zinc-600 mb-1">CONSOLE</div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {entityEndpoints.filter((endpoint) => endpoint.endpointType === 'olt-aux' && endpoint.oltAuxRole === 'CONSOLE').map((endpoint) => (
+                                      <div key={endpoint.id} className="rounded border border-zinc-300 bg-white/90 px-1 py-1 shadow-sm">
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-amber-300 border-amber-600 text-amber-900 hover:bg-amber-400' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
                               </div>
                             </div>
                             <div className="p-2 space-y-2 border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-zinc-100 to-zinc-200 max-h-[500px] overflow-y-auto">
@@ -622,24 +899,46 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                                   <div key={slot.id} className="rounded-lg border border-zinc-400 bg-gradient-to-b from-white to-zinc-100 shadow-sm">
                                     <div className="px-2 py-1 border-b border-zinc-300 flex items-center justify-between text-xs font-semibold text-zinc-700">
                                       <span>Slot {slot.index.toString().padStart(2, '0')}</span>
-                                      <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => addPonToOlt(currentPop.id, olt.id, slot.id)}>+ PON</Button>
+                                      <span className="text-[10px] text-zinc-500">{slot.pons.length} PONs</span>
                                     </div>
                                     <div className="p-2"><div className="flex flex-wrap gap-2">{slotEndpoints.map((endpoint) => (
                                       <div key={endpoint.id} className="flex items-center gap-1 rounded border border-zinc-300 bg-white/90 px-1.5 py-1 shadow-sm">
-                                        <button
-                                          ref={(node) => { endpointRefs.current[endpoint.id] = node; }}
-                                          type="button"
-                                          onMouseDown={(event) => { event.preventDefault(); startEndpointDrag(endpoint.id, endpoint.active === false); }}
-                                          onMouseUp={() => finishEndpointDrag(endpoint.id, endpoint.active === false)}
-                                          className={`h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${
-                                            endpoint.active
-                                              ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500'
-                                              : 'bg-zinc-200 border-zinc-500 text-zinc-500'
-                                          }`}
-                                          title={endpoint.label}
-                                        >
-                                          {getPortDisplay(endpoint)}
-                                        </button>
+                                        <div className="relative inline-flex">
+                                          {(endpointVlanMap.get(endpoint.id) || []).length > 0 && (
+                                            <span className="absolute -top-4 left-1/2 -translate-x-1/2 h-3.5 px-1 rounded border border-cyan-300 bg-cyan-50 text-cyan-700 text-[8px] leading-[12px] whitespace-nowrap">
+                                              {(endpointVlanMap.get(endpoint.id) || []).length === 1 ? `VLAN: ${(endpointVlanMap.get(endpoint.id) || [])[0]}` : `VLAN: ${(endpointVlanMap.get(endpoint.id) || [])[0]}+`}
+                                            </span>
+                                          )}
+                                          <button
+                                            ref={(node) => { endpointRefs.current[endpoint.id] = node; }}
+                                            type="button"
+                                            onMouseDown={(event) => { event.preventDefault(); startEndpointDrag(endpoint.id, endpoint.active === false); }}
+                                            onMouseUp={() => finishEndpointDrag(endpoint.id, endpoint.active === false)}
+                                            onClick={(event) => {
+                                              event.preventDefault();
+                                              event.stopPropagation();
+                                              if (!endpoint.active) {
+                                                handleActivatePon(endpoint);
+                                                return;
+                                              }
+                                              setSelectedEndpointId((prev) => (prev === endpoint.id ? null : endpoint.id));
+                                            }}
+                                            className={`h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${
+                                              endpoint.active
+                                                ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500'
+                                                : 'bg-zinc-200 border-zinc-500 text-zinc-500'
+                                            } ${
+                                              selectedEndpointId === endpoint.id
+                                                ? 'ring-2 ring-amber-400 ring-offset-1'
+                                                : highlightedTrace.endpointIds.has(endpoint.id)
+                                                  ? 'ring-1 ring-cyan-400/80 ring-offset-1'
+                                                  : ''
+                                            }`}
+                                            title={endpoint.label}
+                                          >
+                                            {getPortDisplay(endpoint)}
+                                          </button>
+                                        </div>
                                         <span
                                           className={`w-2.5 h-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                           title={endpoint.active ? 'Ativa' : 'Inativa'}
@@ -666,7 +965,20 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                             <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 px-3 py-3">
                               <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-zinc-700">
                                 <span>SWITCH - {entity.label}</span>
-                                <span>{accessEndpoints.length} PORTAS | {uplinkEndpoints.length} UPLINKS</span>
+                                <div className="flex items-center gap-2">
+                                  <span>{accessEndpoints.length} PORTAS | {uplinkEndpoints.length} UPLINKS</span>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    className="h-6 px-2"
+                                    onClick={() => {
+                                      if (!window.confirm(`Apagar SWITCH "${entity.label}"?`)) return;
+                                      removeSwitchFromPop(currentPop.id, sw.id);
+                                    }}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
                               </div>
                               <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
                                 <div>
@@ -674,10 +986,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                                   <div className="flex flex-wrap gap-1.5">
                                     {accessEndpoints.map((endpoint) => (
                                       <div key={endpoint.id} className="flex flex-col items-center gap-1">
-                                        {renderPortButton(endpoint, `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
                                         <button
                                           type="button"
-                                          className={`h-2.5 w-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
+                                          className={`h-2 w-2 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                           onClick={() => endpoint.portId && toggleSwitchPort(currentPop.id, sw.id, endpoint.portId, false)}
                                           title={endpoint.active ? 'Desativar porta' : 'Ativar porta'}
                                         />
@@ -691,10 +1003,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                                   <div className="flex flex-wrap justify-end gap-1.5">
                                     {uplinkEndpoints.map((endpoint) => (
                                       <div key={endpoint.id} className="flex flex-col items-center gap-1">
-                                        {renderPortButton(endpoint, `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
                                         <button
                                           type="button"
-                                          className={`h-2.5 w-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
+                                          className={`h-2 w-2 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                           onClick={() => endpoint.portId && toggleSwitchPort(currentPop.id, sw.id, endpoint.portId, true)}
                                           title={endpoint.active ? 'Desativar uplink' : 'Ativar uplink'}
                                         />
@@ -720,7 +1032,20 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                             <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 px-3 py-3">
                               <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-zinc-700">
                                 <span>ROTEADOR - {entity.label}</span>
-                                <span>{wanEndpoints.length} WAN | {lanEndpoints.length} LAN</span>
+                                <div className="flex items-center gap-2">
+                                  <span>{wanEndpoints.length} WAN | {lanEndpoints.length} LAN</span>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    className="h-6 px-2"
+                                    onClick={() => {
+                                      if (!window.confirm(`Apagar ROTEADOR "${entity.label}"?`)) return;
+                                      removeRouterFromPop(currentPop.id, router.id);
+                                    }}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
                               </div>
                               <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-3">
                                 <div>
@@ -728,10 +1053,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                                   <div className="flex flex-wrap gap-1.5">
                                     {lanEndpoints.map((endpoint) => (
                                       <div key={endpoint.id} className="flex flex-col items-center gap-1">
-                                        {renderPortButton(endpoint, `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
                                         <button
                                           type="button"
-                                          className={`h-2.5 w-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
+                                          className={`h-2 w-2 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                           onClick={() => endpoint.routerInterfaceId && toggleRouterInterface(currentPop.id, router.id, endpoint.routerInterfaceId)}
                                           title={endpoint.active ? 'Desativar LAN' : 'Ativar LAN'}
                                         />
@@ -745,10 +1070,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                                   <div className="flex flex-wrap justify-end gap-1.5">
                                     {wanEndpoints.map((endpoint) => (
                                       <div key={endpoint.id} className="flex flex-col items-center gap-1">
-                                        {renderPortButton(endpoint, `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
+                                        {renderPortButton(endpoint, `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`, getPortDisplay(endpoint))}
                                         <button
                                           type="button"
-                                          className={`h-2.5 w-2.5 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
+                                          className={`h-2 w-2 rounded-[2px] border ${endpoint.active ? 'bg-emerald-500 border-emerald-700' : 'bg-zinc-300 border-zinc-500'}`}
                                           onClick={() => endpoint.routerInterfaceId && toggleRouterInterface(currentPop.id, router.id, endpoint.routerInterfaceId)}
                                           title={endpoint.active ? 'Desativar WAN' : 'Ativar WAN'}
                                         />
@@ -768,11 +1093,25 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                             <div className="h-4 rounded-t-xl bg-gradient-to-b from-zinc-900 to-zinc-700 cursor-move select-none" onMouseDown={(event) => { event.preventDefault(); startNodeDrag(entity.id, event); }} />
                             <div className="h-1.5 bg-zinc-800/85 shadow-inner" />
                             <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 p-3">
-                              <div className="mb-2 text-[11px] font-semibold text-zinc-700">DIO - {entity.label}</div>
+                              <div className="mb-2 text-[11px] font-semibold text-zinc-700 flex items-center justify-between gap-2">
+                                <span>DIO - {entity.label}</span>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-6 px-2"
+                                  onClick={() => {
+                                    const dioId = entity.id.replace('dio:', '');
+                                    if (!window.confirm(`Apagar DIO "${entity.label}"?`)) return;
+                                    removeDioFromPop(currentPop.id, dioId);
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
                               <div className="grid grid-cols-10 gap-1.5">
                                 {entityEndpoints.map((endpoint) => renderPortButton(
                                   endpoint,
-                                  `h-6 w-6 rounded-[3px] border p-0 text-[9px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`,
+                                  `h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] ${endpoint.active ? 'bg-emerald-400 border-emerald-700 text-emerald-900 hover:bg-emerald-500' : 'bg-zinc-200 border-zinc-500 text-zinc-500'}`,
                                   getPortDisplay(endpoint)
                                 ))}
                               </div>
@@ -837,10 +1176,30 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                       const start = getEndpointPosition(fusion.endpointAId);
                       const end = getEndpointPosition(fusion.endpointBId);
                       if (!start || !end) return null;
+                      if (!selectedEndpointId || !highlightedTrace.fusionIds.has(fusion.id)) return null;
                       return (
-                        <div key={`del-${fusion.id}`} className="absolute z-30 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1" style={{ left: (start.x + end.x) / 2, top: (start.y + end.y) / 2 }}>
-                          {fusion.attenuation === 0 && <span className="px-1.5 h-5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-700 text-[9px] leading-5 shadow-sm">Direto 0 dB</span>}
-                          <Button size="sm" variant="outline" className="h-5 px-1.5 text-[10px]" onClick={() => disconnectPopFusion(currentPop.id, fusion.id)}>x</Button>
+                        <div key={`cut-${fusion.id}`} className="absolute z-30 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1" style={{ left: (start.x + end.x) / 2, top: (start.y + end.y) / 2 }}>
+                          {typeof fusion.vlan === 'number' && (
+                            <span className="h-5 px-1.5 rounded border border-cyan-300 bg-cyan-50 text-cyan-700 text-[10px] leading-5">VLAN: {fusion.vlan}</span>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 w-6 p-0 rounded-full"
+                            onClick={() => handleOpenFusionEdit(fusion)}
+                            title="Editar VLAN"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-6 w-6 p-0 rounded-full shadow"
+                            onClick={() => disconnectPopFusion(currentPop.id, fusion.id)}
+                            title="Cortar ligação"
+                          >
+                            <Scissors className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       );
                     })}
@@ -859,6 +1218,70 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
           </Tabs>
         </div>
       </FullscreenModalShell>
+
+      <Dialog open={linkConfig.open} onOpenChange={(isOpen) => {
+        if (!isOpen) setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' });
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{linkConfig.fusionId ? 'Editar Ligacao' : 'Nova Ligacao'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1 text-xs text-zinc-600">
+              <p><strong>Porta A:</strong> {endpointById[linkConfig.fromId]?.label || linkConfig.fromId}</p>
+              <p><strong>Porta B:</strong> {endpointById[linkConfig.toId]?.label || linkConfig.toId}</p>
+            </div>
+            <div>
+              <Label>VLAN</Label>
+              <Input
+                type="number"
+                min={1}
+                max={4094}
+                value={linkConfig.vlan}
+                onChange={(event) => setLinkConfig((prev) => ({ ...prev, vlan: event.target.value }))}
+                placeholder="Ex: 100"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' })}>Cancelar</Button>
+              <Button onClick={handleSaveLinkConfig}>{linkConfig.fusionId ? 'Salvar' : 'Conectar'}</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ponConfig.open} onOpenChange={(isOpen) => {
+        if (!isOpen) setPonConfig({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: gbicModel || 'C++', txPowerDbm: `${txPowerDbm || 3}` });
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Configurar Porta PON</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Classe/Modelo do GBIC</Label>
+              <Input
+                value={ponConfig.gbicModel}
+                onChange={(event) => setPonConfig((prev) => ({ ...prev, gbicModel: event.target.value }))}
+                placeholder="Ex: C++"
+              />
+            </div>
+            <div>
+              <Label>Potencia de transmissao (dBm)</Label>
+              <Input
+                type="number"
+                value={ponConfig.txPowerDbm}
+                onChange={(event) => setPonConfig((prev) => ({ ...prev, txPowerDbm: event.target.value }))}
+              />
+            </div>
+            <p className="text-xs text-zinc-500">Conector fixo: UPC</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPonConfig({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: gbicModel || 'C++', txPowerDbm: `${txPowerDbm || 3}` })}>Cancelar</Button>
+              <Button onClick={handleSavePonConfig}>Salvar</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
