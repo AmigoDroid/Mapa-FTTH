@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -7,10 +7,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Pencil, Scissors, Trash2, X } from 'lucide-react';
 import { FullscreenModalShell } from './FullscreenModalShell';
-import type { Pop, PopFusion } from '@/types/ftth';
+import { CABLE_MODEL_OPTIONS, FIBER_COLORS } from '@/types/ftth';
+import type { Cable, Pop, PopFusion } from '@/types/ftth';
+import { toast } from 'sonner';
 
 interface PopDetailProps {
   pop: Pop;
@@ -30,6 +33,8 @@ type EndpointNode = {
   label: string;
   shortLabel: string;
   endpointType: 'dio' | 'fiber' | 'pon' | 'uplink' | 'olt-aux' | 'switch-port' | 'router-iface';
+  tubeNumber?: number;
+  localFiberNumber?: number;
   slotId?: string;
   ponId?: string;
   uplinkId?: string;
@@ -83,6 +88,21 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
 
   const currentPop = currentNetwork?.pops.find((item) => item.id === pop.id) || pop;
   const city = currentNetwork?.cities.find((item) => item.id === currentPop.cityId);
+  const mapCableTargets = useMemo(
+    () => [
+      ...((currentNetwork?.boxes || []).map((box) => ({
+        id: box.id,
+        label: `${box.name} (Caixa ${box.type})`,
+      }))),
+      ...((currentNetwork?.pops || [])
+        .filter((item) => item.id !== currentPop.id)
+        .map((item) => ({
+          id: item.id,
+          label: `${item.name} (POP)`,
+        }))),
+    ],
+    [currentNetwork?.boxes, currentNetwork?.pops, currentPop.id]
+  );
 
   const [dioName, setDioName] = useState('');
   const [dioPorts, setDioPorts] = useState(24);
@@ -105,6 +125,20 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [cableName, setCableName] = useState('');
   const [cableType, setCableType] = useState<'bigtail' | 'backbone' | 'patchcord' | 'apc-upc'>('bigtail');
   const [cableFiberCount, setCableFiberCount] = useState(12);
+  const [cableLooseTubeCount, setCableLooseTubeCount] = useState(1);
+  const [cableFibersPerTube, setCableFibersPerTube] = useState(12);
+  const [mainTab, setMainTab] = useState<'infra' | 'fusions' | 'signal'>('infra');
+  const [infraTab, setInfraTab] = useState<'dio' | 'olt' | 'switch' | 'router' | 'cable'>('dio');
+  const [rackFusionScope, setRackFusionScope] = useState<'all' | 'dio-bigtail'>('all');
+  const [rackFusionDioId, setRackFusionDioId] = useState('');
+  const [dioFusionOpen, setDioFusionOpen] = useState(false);
+  const [dioFusionTargetId, setDioFusionTargetId] = useState('');
+  const [createMapCable, setCreateMapCable] = useState(false);
+  const [mapCableTargetId, setMapCableTargetId] = useState('');
+  const [mapCableType, setMapCableType] = useState<Cable['type']>('distribution');
+  const [mapCableModel, setMapCableModel] = useState('AS-80');
+  const [mapCableLooseTubeCount, setMapCableLooseTubeCount] = useState(1);
+  const [mapCableFibersPerTube, setMapCableFibersPerTube] = useState(12);
 
   const [fusionType, setFusionType] = useState<PopFusion['fusionType']>('fusion');
   const [noLoss, setNoLoss] = useState(false);
@@ -246,13 +280,18 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     });
 
     currentPop.cables.forEach((cable) => {
+      const fibersPerTube = Math.max(1, cable.fibersPerTube || 12);
       cable.fibers.forEach((fiber) => {
+        const tubeNumber = fiber.tubeNumber || Math.floor((fiber.number - 1) / fibersPerTube) + 1;
+        const localFiberNumber = ((fiber.number - 1) % fibersPerTube) + 1;
         items.push({
           id: `cable:${cable.id}:f:${fiber.number}`,
           entityId: `cable:${cable.id}`,
-          label: `CABO ${cable.name} - Fibra ${fiber.number}`,
-          shortLabel: `F${fiber.number}`,
+          label: `CABO ${cable.name} - Tubo ${tubeNumber} Fibra ${localFiberNumber} (F${fiber.number})`,
+          shortLabel: `${tubeNumber}.${localFiberNumber}`,
           endpointType: 'fiber',
+          tubeNumber,
+          localFiberNumber,
           active: true,
         });
       });
@@ -272,6 +311,78 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     return acc;
   }, {}), [endpoints]);
 
+  const rackEntityOptions = useMemo<PopEntity[]>(() => {
+    if (rackFusionScope !== 'dio-bigtail') return entityOptions;
+    const allowed = new Set<string>();
+    if (rackFusionDioId) {
+      allowed.add(`dio:${rackFusionDioId}`);
+    } else {
+      currentPop.dios.forEach((dio) => allowed.add(`dio:${dio.id}`));
+    }
+    currentPop.cables
+      .filter((cable) => cable.type === 'bigtail')
+      .forEach((cable) => allowed.add(`cable:${cable.id}`));
+    return entityOptions.filter((entity) => allowed.has(entity.id));
+  }, [rackFusionScope, rackFusionDioId, currentPop.dios, currentPop.cables, entityOptions]);
+
+  const rackEndpointsByEntity = useMemo(() => {
+    const allowed = new Set(rackEntityOptions.map((entity) => entity.id));
+    return Object.entries(endpointsByEntity).reduce<Record<string, EndpointNode[]>>((acc, [entityId, entityEndpoints]) => {
+      if (allowed.has(entityId)) acc[entityId] = entityEndpoints;
+      return acc;
+    }, {});
+  }, [rackEntityOptions, endpointsByEntity]);
+
+  const rackEndpointById = useMemo(() => {
+    return Object.values(rackEndpointsByEntity).flat().reduce<Record<string, EndpointNode>>((acc, endpoint) => {
+      acc[endpoint.id] = endpoint;
+      return acc;
+    }, {});
+  }, [rackEndpointsByEntity]);
+
+  const rackFusions = useMemo(() => {
+    if (rackFusionScope !== 'dio-bigtail') return currentPop.fusions;
+    const visible = new Set(Object.keys(rackEndpointById));
+    return currentPop.fusions.filter((fusion) => visible.has(fusion.endpointAId) && visible.has(fusion.endpointBId));
+  }, [rackFusionScope, currentPop.fusions, rackEndpointById]);
+
+  const dioFusionEntityOptions = useMemo<PopEntity[]>(() => {
+    if (!dioFusionTargetId) return [];
+    const selectedDioEntityId = `dio:${dioFusionTargetId}`;
+    const allowed = new Set<string>([selectedDioEntityId]);
+    currentPop.cables.forEach((cable) => allowed.add(`cable:${cable.id}`));
+    return entityOptions.filter((entity) => allowed.has(entity.id));
+  }, [dioFusionTargetId, currentPop.cables, entityOptions]);
+
+  const dioFusionEndpointsByEntity = useMemo(() => {
+    const allowed = new Set(dioFusionEntityOptions.map((entity) => entity.id));
+    return Object.entries(endpointsByEntity).reduce<Record<string, EndpointNode[]>>((acc, [entityId, entityEndpoints]) => {
+      if (allowed.has(entityId)) acc[entityId] = entityEndpoints;
+      return acc;
+    }, {});
+  }, [dioFusionEntityOptions, endpointsByEntity]);
+
+  const dioFusionEndpointById = useMemo(() => {
+    return Object.values(dioFusionEndpointsByEntity).flat().reduce<Record<string, EndpointNode>>((acc, endpoint) => {
+      acc[endpoint.id] = endpoint;
+      return acc;
+    }, {});
+  }, [dioFusionEndpointsByEntity]);
+
+  const dioFusionFusions = useMemo(() => {
+    const visible = new Set(Object.keys(dioFusionEndpointById));
+    return currentPop.fusions.filter((fusion) => visible.has(fusion.endpointAId) && visible.has(fusion.endpointBId));
+  }, [currentPop.fusions, dioFusionEndpointById]);
+
+  const dioFusionSceneSize = useMemo(() => {
+    const positions = dioFusionEntityOptions
+      .map((entity) => nodePositions[entity.id])
+      .filter((value): value is { x: number; y: number } => Boolean(value));
+    const maxX = positions.length > 0 ? Math.max(...positions.map((p) => p.x)) : 0;
+    const maxY = positions.length > 0 ? Math.max(...positions.map((p) => p.y)) : 0;
+    return { width: Math.max(980, maxX + 280), height: Math.max(620, maxY + 220) };
+  }, [dioFusionEntityOptions, nodePositions]);
+
   const totalFusionLoss = useMemo(() => currentPop.fusions.reduce((sum, fusion) => sum + (fusion.attenuation || 0), 0), [currentPop.fusions]);
 
   const avgTxDbm = useMemo(() => {
@@ -288,6 +399,68 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, [currentPop.olts]);
 
   const estimatedRxDbm = avgTxDbm - totalFusionLoss;
+  const mapCableModelOptions = useMemo(
+    () => CABLE_MODEL_OPTIONS.filter((item) => item.category === mapCableType),
+    [mapCableType]
+  );
+  const mapCableCapacity = Math.max(1, mapCableLooseTubeCount * mapCableFibersPerTube);
+  const popCableCapacity = Math.max(1, cableLooseTubeCount * cableFibersPerTube);
+
+  useEffect(() => {
+    if (mapCableModelOptions.length === 0) return;
+    if (!mapCableModelOptions.some((option) => option.id === mapCableModel)) {
+      setMapCableModel(mapCableModelOptions[0]!.id);
+    }
+  }, [mapCableModel, mapCableModelOptions]);
+
+  useEffect(() => {
+    if (cableFiberCount > popCableCapacity) {
+      setCableFiberCount(popCableCapacity);
+    }
+  }, [cableFiberCount, popCableCapacity]);
+
+  useEffect(() => {
+    if (currentPop.dios.length === 0) {
+      setRackFusionDioId('');
+      return;
+    }
+    if (!rackFusionDioId || !currentPop.dios.some((dio) => dio.id === rackFusionDioId)) {
+      setRackFusionDioId(currentPop.dios[0]!.id);
+    }
+  }, [currentPop.dios, rackFusionDioId]);
+
+  useEffect(() => {
+    if (!selectedEndpointId) return;
+    if (rackFusionScope === 'dio-bigtail' && !rackEndpointById[selectedEndpointId]) {
+      setSelectedEndpointId(null);
+    }
+  }, [rackFusionScope, rackEndpointById, selectedEndpointId]);
+
+  useEffect(() => {
+    if (!dioFusionOpen) return;
+    if (currentPop.dios.length === 0) {
+      setDioFusionTargetId('');
+      return;
+    }
+    if (!dioFusionTargetId || !currentPop.dios.some((dio) => dio.id === dioFusionTargetId)) {
+      setDioFusionTargetId(currentPop.dios[0]!.id);
+    }
+  }, [dioFusionOpen, currentPop.dios, dioFusionTargetId]);
+
+  useEffect(() => {
+    if (!dioFusionOpen || dioFusionEntityOptions.length === 0) return;
+    setNodePositions((prev) => {
+      const next = { ...prev };
+      const cols = 2;
+      dioFusionEntityOptions.forEach((entity, idx) => {
+        if (next[entity.id]) return;
+        const col = idx % cols;
+        const row = Math.floor(idx / cols);
+        next[entity.id] = { x: 26 + col * 380, y: 24 + row * 220 };
+      });
+      return next;
+    });
+  }, [dioFusionOpen, dioFusionEntityOptions]);
 
   const sceneSize = useMemo(() => {
     const positions = Object.values(nodePositions);
@@ -325,6 +498,62 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, [open]);
 
   useEffect(() => {
+    if (!open) return;
+
+    let changed = false;
+    const normalizedCables = currentPop.cables.map((cable) => {
+      const fibersPerTube = Math.max(1, cable.fibersPerTube || 12);
+      const looseTubeCount = Math.max(
+        1,
+        cable.looseTubeCount || Math.ceil(Math.max(cable.fiberCount || 0, cable.fibers.length) / fibersPerTube)
+      );
+      const capacity = looseTubeCount * fibersPerTube;
+      const desiredFiberCount = Math.max(cable.fiberCount || 0, cable.fibers.length, capacity);
+
+      const existingByNumber = new Map(cable.fibers.map((fiber) => [fiber.number, fiber]));
+      const fibers = Array.from({ length: desiredFiberCount }, (_, idx) => {
+        const number = idx + 1;
+        const current = existingByNumber.get(number);
+        const tubeNumber = Math.floor(idx / fibersPerTube) + 1;
+        if (current) {
+          return {
+            ...current,
+            tubeNumber: current.tubeNumber || tubeNumber,
+          };
+        }
+        changed = true;
+        return {
+          id: `pop-${cable.id}-f-${number}-${Math.random().toString(36).slice(2, 8)}`,
+          number,
+          tubeNumber,
+          color: FIBER_COLORS[(number - 1) % 12],
+          status: 'inactive' as const,
+        };
+      });
+
+      if (
+        cable.fiberCount !== desiredFiberCount ||
+        cable.looseTubeCount !== looseTubeCount ||
+        cable.fibersPerTube !== fibersPerTube ||
+        fibers.length !== cable.fibers.length
+      ) {
+        changed = true;
+      }
+
+      return {
+        ...cable,
+        fiberCount: desiredFiberCount,
+        looseTubeCount,
+        fibersPerTube,
+        fibers,
+      };
+    });
+
+    if (!changed) return;
+    updatePop(currentPop.id, { cables: normalizedCables });
+  }, [open, currentPop.id, currentPop.cables, updatePop]);
+
+  useEffect(() => {
     const onResize = () => setSceneRenderTick((prev) => prev + 1);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
@@ -341,12 +570,12 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     return () => window.cancelAnimationFrame(raf);
   }, [open, boardZoom, nodePositions, currentPop.fusions.length, endpoints.length]);
 
-  const getScenePoint = (clientX: number, clientY: number) => {
+  const getScenePoint = useCallback((clientX: number, clientY: number) => {
     const scene = sceneRef.current;
     if (!scene) return null;
     const rect = scene.getBoundingClientRect();
     return { x: (clientX - rect.left) / boardZoom, y: (clientY - rect.top) / boardZoom };
-  };
+  }, [boardZoom]);
 
   const getEndpointPosition = (endpointId: string) => {
     const scene = sceneRef.current;
@@ -506,7 +735,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     setDragState(null);
   };
 
-  const persistFusionLayout = () => {
+  const persistFusionLayout = useCallback(() => {
     const keys = new Set(entityOptions.map((entity) => entity.id));
     const normalized = Object.entries(nodePositionsRef.current).reduce<Record<string, { x: number; y: number }>>((acc, [key, value]) => {
       if (!keys.has(key)) return acc;
@@ -514,7 +743,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       return acc;
     }, {});
     updatePop(currentPop.id, { fusionLayout: normalized });
-  };
+  }, [currentPop.id, entityOptions, updatePop]);
 
   useEffect(() => {
     if (!nodeDragState && !dragState) return;
@@ -544,7 +773,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [nodeDragState, dragState, sceneSize.width, sceneSize.height, boardZoom]);
+  }, [nodeDragState, dragState, sceneSize.width, sceneSize.height, boardZoom, getScenePoint, persistFusionLayout]);
 
   const handleSceneWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!(event.ctrlKey || event.metaKey)) return;
@@ -600,7 +829,20 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     });
   };
 
-  const getPortDisplay = (endpoint: EndpointNode) => endpoint.shortLabel.match(/\d+/)?.[0] || endpoint.shortLabel;
+  const openDioFusionWorkspace = (dioId: string) => {
+    setDioFusionTargetId(dioId);
+    setDioFusionOpen(true);
+  };
+
+  const getPortDisplay = (endpoint: EndpointNode) => {
+    if (endpoint.endpointType === 'fiber') {
+      if (typeof endpoint.tubeNumber === 'number' && typeof endpoint.localFiberNumber === 'number') {
+        return `${endpoint.tubeNumber}.${endpoint.localFiberNumber}`;
+      }
+      return endpoint.shortLabel;
+    }
+    return endpoint.shortLabel.match(/\d+/)?.[0] || endpoint.shortLabel;
+  };
 
   const renderPortButton = (endpoint: EndpointNode, className?: string, displayLabel?: string) => {
     const isDisabled = endpoint.active === false;
@@ -623,7 +865,27 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            setSelectedEndpointId((prev) => (prev === endpoint.id ? null : endpoint.id));
+            setSelectedEndpointId((prev) => {
+              const next = prev === endpoint.id ? null : endpoint.id;
+              if (!next) {
+                window.dispatchEvent(new CustomEvent('ftth:trace-clear'));
+                return next;
+              }
+              if (endpoint.endpointType === 'fiber') {
+                const parts = endpoint.id.split(':');
+                const cableId = parts[1];
+                const marker = parts[2];
+                const fiberNumber = Number.parseInt(parts[3] || '', 10);
+                if (cableId && marker === 'f' && !Number.isNaN(fiberNumber)) {
+                  const cable = (currentPop.cables || []).find((item) => item.id === cableId);
+                  const fiber = cable?.fibers.find((item) => item.number === fiberNumber);
+                  if (fiber) {
+                    window.dispatchEvent(new CustomEvent('ftth:trace-fiber', { detail: { fiberId: fiber.id } }));
+                  }
+                }
+              }
+              return next;
+            });
           }}
           disabled={isDisabled}
           className={`${className || `h-7 px-2 rounded border text-[11px] ${isDisabled ? 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed' : 'bg-white hover:bg-slate-50 border-slate-300 cursor-pointer'}`} ${isSelected ? 'ring-2 ring-amber-400 ring-offset-1' : ''} ${!isSelected && isOnTrace ? 'ring-1 ring-cyan-400/80 ring-offset-1' : ''}`}
@@ -656,7 +918,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
         </DialogHeader>
 
         <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-0">
-          <Tabs defaultValue="infra" className="space-y-4">
+          <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as 'infra' | 'fusions' | 'signal')} className="space-y-4">
             <TabsList className="w-full max-w-[860px] flex gap-2 overflow-x-auto">
               <TabsTrigger className="shrink-0 whitespace-nowrap" value="infra">Infra POP</TabsTrigger>
               <TabsTrigger className="shrink-0 whitespace-nowrap" value="fusions">Rack POP</TabsTrigger>
@@ -673,7 +935,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Fusoes</p><p className="text-2xl font-semibold">{currentPop.fusions.length}</p></div>
               </div>
 
-              <Tabs defaultValue="dio" className="space-y-4">
+              <Tabs value={infraTab} onValueChange={(value) => setInfraTab(value as 'dio' | 'olt' | 'switch' | 'router' | 'cable')} className="space-y-4">
                 <TabsList className="w-full flex gap-2 overflow-x-auto">
                   <TabsTrigger className="shrink-0 whitespace-nowrap" value="dio">DIO</TabsTrigger>
                   <TabsTrigger className="shrink-0 whitespace-nowrap" value="olt">OLT</TabsTrigger>
@@ -694,6 +956,27 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     if (!created) return;
                     setDioName('');
                   }}>Adicionar DIO</Button>
+                  {currentPop.dios.length > 0 && (
+                    <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+                      <p className="text-xs font-medium text-slate-700">Fusao DIO x Cabos</p>
+                      <p className="text-xs text-slate-500">
+                        Abra a tela de fusoes no mesmo esquema visual das caixas, focada no DIO selecionado.
+                      </p>
+                      <div className="space-y-2">
+                        {currentPop.dios.map((dio) => (
+                          <div key={dio.id} className="flex items-center justify-between rounded border bg-white px-2 py-1.5">
+                            <div>
+                              <p className="text-sm font-medium">{dio.name}</p>
+                              <p className="text-xs text-gray-500">{dio.portCount} portas</p>
+                            </div>
+                            <Button size="sm" variant="outline" onClick={() => openDioFusionWorkspace(dio.id)}>
+                              Abrir Fusoes
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="olt" className="space-y-3 border rounded-lg p-4">
@@ -756,22 +1039,203 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
 
                 <TabsContent value="cable" className="space-y-3 border rounded-lg p-4">
                   <h4 className="font-semibold text-sm">Cadastrar Cabo do POP</h4>
-                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
                     <div><Label>Nome</Label><Input value={cableName} onChange={(e) => setCableName(e.target.value)} placeholder="BIGTAIL 24F" /></div>
                     <div><Label>Tipo</Label><Select value={cableType} onValueChange={(v: 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc') => setCableType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="bigtail">Bigtail</SelectItem><SelectItem value="backbone">Backbone</SelectItem><SelectItem value="patchcord">Patchcord</SelectItem><SelectItem value="apc-upc">APC-UPC</SelectItem></SelectContent></Select></div>
-                    <div><Label>Fibras</Label><Input type="number" min={1} value={cableFiberCount} onChange={(e) => setCableFiberCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                    <div><Label>Tubos loose</Label><Input type="number" min={1} value={cableLooseTubeCount} onChange={(e) => setCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                    <div><Label>Fibras por tubo</Label><Input type="number" min={1} value={cableFibersPerTube} onChange={(e) => setCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                    <div><Label>Fibras</Label><Input type="number" min={1} max={popCableCapacity} value={cableFiberCount} onChange={(e) => setCableFiberCount(Math.max(1, Math.min(popCableCapacity, Number.parseInt(e.target.value || '1', 10))))} /></div>
                   </div>
-                  <Button onClick={() => {
+                  <p className="text-xs text-zinc-500">Capacidade do cabo POP: {popCableCapacity} fibras ({cableLooseTubeCount} x {cableFibersPerTube}).</p>
+                  <div className="rounded-lg border bg-gray-50 px-3 py-2 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">Criar cabo no mapa junto com cabo POP</p>
+                        <p className="text-xs text-gray-500">Ative para refletir no mapa e editar tracado pela tela do mapa.</p>
+                      </div>
+                      <Switch checked={createMapCable} onCheckedChange={setCreateMapCable} />
+                    </div>
+                    {createMapCable && (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div>
+                          <Label>Tipo do cabo no mapa</Label>
+                          <Select value={mapCableType} onValueChange={(v: Cable['type']) => setMapCableType(v)}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="distribution">Distribuicao</SelectItem>
+                              <SelectItem value="feeder">Feeder</SelectItem>
+                              <SelectItem value="backbone">Backbone</SelectItem>
+                              <SelectItem value="drop">Drop</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label>Modelo do cabo no mapa</Label>
+                          <Select value={mapCableModel} onValueChange={setMapCableModel}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {mapCableModelOptions.map((model) => (
+                                <SelectItem key={model.id} value={model.id}>
+                                  {model.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label>Tubos loose</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            value={mapCableLooseTubeCount}
+                            onChange={(e) => setMapCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                          />
+                        </div>
+                        <div>
+                          <Label>Fibras por tubo</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            value={mapCableFibersPerTube}
+                            onChange={(e) => setMapCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {createMapCable && (
+                      <div>
+                        <Label>Destino no mapa (caixa ou POP) - opcional</Label>
+                        <Select value={mapCableTargetId || '__none__'} onValueChange={(v) => setMapCableTargetId(v === '__none__' ? '' : v)}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">Selecione um destino</SelectItem>
+                            {mapCableTargets.map((target) => (
+                              <SelectItem key={target.id} value={target.id}>
+                                {target.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    {createMapCable && (
+                      <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800">
+                        Ao adicionar, esta tela sera fechada e o mapa abrira no modo de desenho do cabo automaticamente.
+                        O cabo sera salvo apenas depois que voce finalizar o tracado no mapa.
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    disabled={!cableName.trim()}
+                    onClick={() => {
                     if (!cableName.trim()) return;
-                    const created = addCableToPop(currentPop.id, { name: cableName.trim(), type: cableType, fiberCount: cableFiberCount, status: 'active' });
-                    if (!created) return;
+                    const created = addCableToPop(currentPop.id, {
+                      name: cableName.trim(),
+                      type: cableType,
+                      fiberCount: cableFiberCount,
+                      looseTubeCount: cableLooseTubeCount,
+                      fibersPerTube: cableFibersPerTube,
+                      status: 'active',
+                    });
+                    if (!created) {
+                      toast.error('Nao foi possivel criar o cabo interno do POP.');
+                      return;
+                    }
+                    if (createMapCable && mapCableTargetId) {
+                      onOpenChange(false);
+                      const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
+                      window.setTimeout(() => {
+                        window.dispatchEvent(
+                          new CustomEvent('ftth:start-map-cable-drawing', {
+                            detail: {
+                              name: `${cableName.trim()} [MAPA]`,
+                              type: mapCableType,
+                              model: mapCableModel,
+                              fiberCount,
+                              looseTubeCount: mapCableLooseTubeCount,
+                              fibersPerTube: mapCableFibersPerTube,
+                              startPoint: currentPop.id,
+                              endPoint: mapCableTargetId,
+                            },
+                          })
+                        );
+                      }, 120);
+                      toast.success('Cabo POP criado. Mapa aberto para desenhar o tracado.');
+                    } else if (createMapCable) {
+                      onOpenChange(false);
+                      const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
+                      window.setTimeout(() => {
+                        window.dispatchEvent(
+                          new CustomEvent('ftth:start-map-cable-drawing', {
+                            detail: {
+                              name: `${cableName.trim()} [MAPA]`,
+                              type: mapCableType,
+                              model: mapCableModel,
+                              fiberCount,
+                              looseTubeCount: mapCableLooseTubeCount,
+                              fibersPerTube: mapCableFibersPerTube,
+                              startPoint: currentPop.id,
+                              endPoint: '',
+                            },
+                          })
+                        );
+                      }, 120);
+                      toast.success('Cabo POP criado sem destino. Mapa aberto para desenhar o tracado.');
+                    }
                     setCableName('');
-                  }}>Adicionar Cabo</Button>
+                    setCableLooseTubeCount(1);
+                    setCableFibersPerTube(12);
+                    setMapCableTargetId('');
+                  }}
+                  >
+                    {createMapCable ? 'Adicionar e Desenhar no Mapa' : 'Adicionar Cabo POP (Interno)'}
+                  </Button>
                 </TabsContent>
               </Tabs>
             </TabsContent>
 
             <TabsContent value="fusions" className="space-y-4">
+              <div className="rounded-lg border bg-slate-50 p-3">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <Label>Escopo da tela de fusoes</Label>
+                        <Select value={rackFusionScope} onValueChange={(v: 'all' | 'dio-bigtail') => setRackFusionScope(v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Rack completo (POP)</SelectItem>
+                        <SelectItem value="dio-bigtail">Somente DIO x Bigtail</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {rackFusionScope === 'dio-bigtail' && (
+                    <div>
+                      <Label>DIO alvo</Label>
+                      <Select value={rackFusionDioId || '__none__'} onValueChange={(v) => setRackFusionDioId(v === '__none__' ? '' : v)}>
+                        <SelectTrigger><SelectValue placeholder="Selecione um DIO" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">Todos os DIOs</SelectItem>
+                          {currentPop.dios.map((dio) => (
+                            <SelectItem key={dio.id} value={dio.id}>
+                              {dio.name} ({dio.portCount} portas)
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                {rackFusionScope === 'dio-bigtail' && currentPop.cables.filter((cable) => cable.type === 'bigtail').length === 0 && (
+                  <p className="text-xs text-amber-700 mt-2">
+                    Nenhum cabo bigtail cadastrado. Cadastre um cabo tipo bigtail para fusionar no DIO.
+                  </p>
+                )}
+              </div>
               <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] items-end border rounded-lg p-3 bg-gray-50">
                 <div><Label>Tipo de conexao</Label><Select value={fusionType} onValueChange={(v: PopFusion['fusionType']) => setFusionType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="fusion">Fusao</SelectItem><SelectItem value="connector">Conector</SelectItem><SelectItem value="mechanical">Mecanica</SelectItem></SelectContent></Select></div>
                 <Button variant={noLoss ? 'default' : 'outline'} onClick={() => setNoLoss((prev) => !prev)} className="w-full lg:w-auto">{noLoss ? 'Sem perda (0 dB)' : 'Perda normal'}</Button>
@@ -812,9 +1276,9 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     }}
                   >
                     <div className="relative z-10">
-                    {entityOptions.map((entity) => {
+                    {rackEntityOptions.map((entity) => {
                       const pos = nodePositions[entity.id] || { x: 24, y: 24 };
-                      const entityEndpoints = endpointsByEntity[entity.id] || [];
+                      const entityEndpoints = rackEndpointsByEntity[entity.id] || [];
 
                       if (entity.type === 'olt') {
                         const oltId = entity.id.replace('olt:', '');
@@ -1129,7 +1593,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     })}
                     </div>
                     <svg className="absolute inset-0 w-full h-full pointer-events-none z-20">
-                      {currentPop.fusions.map((fusion, index) => {
+                      {rackFusions.map((fusion, index) => {
                         const start = getEndpointPosition(fusion.endpointAId);
                         const end = getEndpointPosition(fusion.endpointBId);
                         if (!start || !end) return null;
@@ -1172,7 +1636,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                         );
                       })}
                     </svg>
-                    {currentPop.fusions.map((fusion) => {
+                    {rackFusions.map((fusion) => {
                       const start = getEndpointPosition(fusion.endpointAId);
                       const end = getEndpointPosition(fusion.endpointBId);
                       if (!start || !end) return null;
@@ -1196,7 +1660,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                             variant="destructive"
                             className="h-6 w-6 p-0 rounded-full shadow"
                             onClick={() => disconnectPopFusion(currentPop.id, fusion.id)}
-                            title="Cortar ligação"
+                            title="Cortar ligaÃ§Ã£o"
                           >
                             <Scissors className="h-3.5 w-3.5" />
                           </Button>
@@ -1218,6 +1682,172 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
           </Tabs>
         </div>
       </FullscreenModalShell>
+
+      <Dialog open={dioFusionOpen} onOpenChange={setDioFusionOpen}>
+        <DialogContent className="max-w-[96vw] w-[1400px] h-[90vh] p-0 flex flex-col">
+          <DialogHeader className="px-6 pt-5 pb-3 border-b">
+            <DialogTitle className="flex items-center justify-between gap-3">
+              <span>Fusoes do DIO</span>
+              <span className="text-xs font-normal text-gray-500">
+                Tela dedicada para fusao de portas do DIO com fibras de qualquer cabo do POP
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="px-6 py-4 space-y-4 overflow-y-auto">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <Label>DIO</Label>
+                <Select value={dioFusionTargetId || '__none__'} onValueChange={(v) => setDioFusionTargetId(v === '__none__' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Selecione um DIO" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Selecione</SelectItem>
+                    {currentPop.dios.map((dio) => (
+                      <SelectItem key={dio.id} value={dio.id}>
+                        {dio.name} ({dio.portCount} portas)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Tipo de conexao</Label>
+                <Select value={fusionType} onValueChange={(v: PopFusion['fusionType']) => setFusionType(v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fusion">Fusao</SelectItem>
+                    <SelectItem value="connector">Conector</SelectItem>
+                    <SelectItem value="mechanical">Mecanica</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-end gap-2">
+                <Button variant={noLoss ? 'default' : 'outline'} onClick={() => setNoLoss((prev) => !prev)} className="w-full">
+                  {noLoss ? 'Sem perda (0 dB)' : 'Perda normal'}
+                </Button>
+              </div>
+            </div>
+
+            {dioFusionEntityOptions.length === 0 ? (
+              <div className="rounded border bg-amber-50 text-amber-800 px-3 py-2 text-sm">
+                Selecione um DIO e garanta que exista ao menos um cabo POP para iniciar a fusao.
+              </div>
+            ) : (
+              <div className="border rounded-xl overflow-hidden bg-zinc-100">
+                <div
+                  ref={fusionViewportRef}
+                  className="relative min-h-[420px] overflow-auto"
+                  style={{ height: `${Math.max(460, fusionViewportHeight)}px` }}
+                  onScroll={() => setSceneRenderTick((prev) => prev + 1)}
+                  onWheel={handleSceneWheel}
+                  title="Use Ctrl + roda do mouse para zoom"
+                >
+                  <div
+                    ref={sceneRef}
+                    className="relative origin-top-left"
+                    style={{ width: `${dioFusionSceneSize.width}px`, height: `${dioFusionSceneSize.height}px`, transform: `scale(${boardZoom})` }}
+                    data-render-tick={sceneRenderTick}
+                    onMouseDown={(event) => {
+                      if (event.target === event.currentTarget) {
+                        setSelectedEndpointId(null);
+                      }
+                    }}
+                  >
+                    <div className="relative z-10">
+                      {dioFusionEntityOptions.map((entity) => {
+                        const pos = nodePositions[entity.id] || { x: 24, y: 24 };
+                        const entityEndpoints = dioFusionEndpointsByEntity[entity.id] || [];
+
+                        if (entity.type === 'dio') {
+                          const dio = currentPop.dios.find((item) => `dio:${item.id}` === entity.id);
+                          if (!dio) return null;
+                          return (
+                            <div key={entity.id} className="absolute w-[420px] rounded-xl border border-zinc-900 bg-gradient-to-b from-zinc-100 to-zinc-300 shadow-[0_10px_24px_rgba(0,0,0,0.45)]" style={{ left: pos.x, top: pos.y }}>
+                              <div className="h-4 rounded-t-xl bg-gradient-to-b from-zinc-900 to-zinc-700 cursor-move select-none" onMouseDown={(event) => { event.preventDefault(); startNodeDrag(entity.id, event); }} />
+                              <div className="h-1.5 bg-zinc-800/85 shadow-inner" />
+                              <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 px-3 py-3">
+                                <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-zinc-700">
+                                  <span>DIO - {entity.label}</span>
+                                  <span>{entityEndpoints.length} portas</span>
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {entityEndpoints.map((endpoint) => (
+                                    <div key={endpoint.id}>
+                                      {renderPortButton(endpoint, 'h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] bg-emerald-300 border-emerald-700 text-emerald-900 hover:bg-emerald-400', getPortDisplay(endpoint))}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (entity.type === 'cable') {
+                          const cable = currentPop.cables.find((item) => `cable:${item.id}` === entity.id);
+                          if (!cable) return null;
+                          return (
+                            <div key={entity.id} className="absolute w-[360px] rounded-xl border border-zinc-900 bg-gradient-to-b from-zinc-100 to-zinc-300 shadow-[0_10px_24px_rgba(0,0,0,0.45)]" style={{ left: pos.x, top: pos.y }}>
+                              <div className="h-4 rounded-t-xl bg-gradient-to-b from-zinc-900 to-zinc-700 cursor-move select-none" onMouseDown={(event) => { event.preventDefault(); startNodeDrag(entity.id, event); }} />
+                              <div className="h-1.5 bg-zinc-800/85 shadow-inner" />
+                              <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 px-3 py-3">
+                                <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-zinc-700">
+                                  <span>CABO BIGTAIL - {entity.label}</span>
+                                  <span>{cable.fiberCount} fibras</span>
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {entityEndpoints.map((endpoint) => (
+                                    <div key={endpoint.id}>
+                                      {renderPortButton(endpoint, 'h-5 w-5 rounded-[3px] border p-0 text-[8px] font-bold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(0,0,0,0.2)] bg-sky-300 border-sky-700 text-sky-900 hover:bg-sky-400', getPortDisplay(endpoint))}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        return null;
+                      })}
+                    </div>
+                    <svg className="pointer-events-none absolute inset-0 h-full w-full">
+                      {dioFusionFusions.map((fusion, index) => {
+                        const start = getEndpointPosition(fusion.endpointAId);
+                        const end = getEndpointPosition(fusion.endpointBId);
+                        if (!start || !end) return null;
+                        const laneOffset = ((index % 4) - 1.5) * 2.2;
+                        const path = buildOrganizedPath(dioFusionSceneSize.width, start, end, laneOffset, index);
+                        const palette = getCablePalette(fusion);
+                        const dash = fusion.attenuation === 0 ? '6 4' : undefined;
+                        return (
+                          <g key={fusion.id}>
+                            <path d={path} stroke={palette.inner} strokeWidth={8} fill="none" strokeLinecap="round" opacity={0.2} />
+                            <path d={path} stroke={palette.outer} strokeWidth={5} strokeDasharray={dash} fill="none" strokeLinecap="round" />
+                            <path d={path} stroke={palette.inner} strokeWidth={2.4} strokeDasharray={dash} fill="none" strokeLinecap="round" />
+                          </g>
+                        );
+                      })}
+                    </svg>
+                    {dioFusionFusions.map((fusion) => {
+                      const start = getEndpointPosition(fusion.endpointAId);
+                      const end = getEndpointPosition(fusion.endpointBId);
+                      if (!start || !end) return null;
+                      return (
+                        <div key={`cut-dio-${fusion.id}`} className="absolute z-30 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1" style={{ left: (start.x + end.x) / 2, top: (start.y + end.y) / 2 }}>
+                          <Button size="sm" variant="outline" className="h-6 w-6 p-0 rounded-full" onClick={() => handleOpenFusionEdit(fusion)} title="Editar VLAN">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="sm" variant="destructive" className="h-6 w-6 p-0 rounded-full shadow" onClick={() => disconnectPopFusion(currentPop.id, fusion.id)} title="Cortar ligacao">
+                            <Scissors className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={linkConfig.open} onOpenChange={(isOpen) => {
         if (!isOpen) setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' });

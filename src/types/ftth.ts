@@ -1,4 +1,4 @@
-// Tipos para o sistema de documentação FTTH
+// Tipos para o sistema de documentacao FTTH
 
 export type ComponentType = 'CEO' | 'CTO' | 'DIO' | 'CABLE' | 'SPLITTER' | 'CONNECTOR';
 
@@ -25,6 +25,7 @@ export interface FiberColor {
 export interface Fiber {
   id: string;
   number: number;
+  tubeNumber?: number;
   color: FiberColor;
   status: 'active' | 'inactive' | 'faulty' | 'reserved';
   connectedTo?: string;
@@ -159,6 +160,8 @@ export interface PopCable {
   name: string;
   type: 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc';
   fiberCount: number;
+  looseTubeCount?: number;
+  fibersPerTube?: number;
   fibers: Fiber[];
   status: 'active' | 'inactive' | 'maintenance';
 }
@@ -323,9 +326,10 @@ export const CABLE_MODEL_OPTIONS: CableModelOption[] = [
   { id: 'MICRO-CABO', label: 'MICRO-CABO', category: 'distribution' },
 ];
 
-// Ícones para caixas
+// Icones para caixas
 export const BOX_ICONS: Record<string, { icon: string; color: string; size: number }> = {
   CEO: { icon: 'building-2', color: '#0066CC', size: 32 },
   CTO: { icon: 'box', color: '#00CC00', size: 28 },
   DIO: { icon: 'layout-grid', color: '#FF6600', size: 24 },
 };
+

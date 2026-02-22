@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
-import type { Position } from '@/types/ftth';
+import type { Box, Cable, City, Fiber, Pop, Position, ReservePoint } from '@/types/ftth';
 import { BOX_ICONS, CABLE_MODEL_OPTIONS } from '@/types/ftth';
+import { getFiberById, resolveNextFiberThroughPop } from '@/store/networkUtils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Edit, Map, Satellite } from 'lucide-react';
 
-// Declaração global para Leaflet
+// Declaracao global para Leaflet
 declare global {
   interface Window {
     L: any;
@@ -33,15 +34,53 @@ interface NearestCableHit extends PendingAttachToCable {
   distancePx: number;
 }
 
+interface MapPointRequestDetail {
+  requestId: string;
+}
+
+interface FiberTraceRequestDetail {
+  fiberId: string;
+  persist?: boolean;
+}
+
+interface EditCableRequestDetail {
+  cableId: string;
+}
+
+interface StartMapCableDrawingDetail {
+  name?: string;
+  type?: Cable['type'];
+  model?: string;
+  fiberCount?: number;
+  looseTubeCount?: number;
+  fibersPerTube?: number;
+  startPoint?: string;
+  endPoint?: string;
+}
+
+interface FiberTraceSegment {
+  id: string;
+  points: Position[];
+  color: string;
+  delayMs: number;
+}
+
 export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<any>(null);
   const markersLayer = useRef<any>(null);
   const cablesLayer = useRef<any>(null);
+  const fiberTraceLayer = useRef<any>(null);
   const tileLayer = useRef<any>(null);
   const tempPolylineRef = useRef<any>(null);
   const clickModeRef = useRef<ClickMode>('normal');
+  const findNearestCableForPositionRef = useRef<(position: Position) => NearestCableHit | null>(() => null);
+  const findNearestBoxForPositionRef = useRef<(position: Position) => Position | null>(() => null);
+  const pendingMapPointRequestIdRef = useRef<string | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
+  const [mapPointPickActive, setMapPointPickActive] = useState(false);
+  const [fiberTraceSegments, setFiberTraceSegments] = useState<FiberTraceSegment[]>([]);
+  const [fiberTracePinned, setFiberTracePinned] = useState(false);
   
   const { 
     currentNetwork, 
@@ -90,6 +129,32 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
   const maxFiberCapacity = Math.max(1, looseTubeCount * fibersPerTube);
   const availableModels = CABLE_MODEL_OPTIONS.filter((item) => item.category === cableType);
   const cableEndpointSummary = cableStartBox && cableEndBox ? 'cabo com origem e destino' : 'cabo livre';
+  const cableEndpointOptions = useMemo(
+    () => [
+      ...((currentNetwork?.boxes || []).map((box) => ({
+        id: box.id,
+        label: `${box.name} (Caixa ${box.type})`,
+      }))),
+      ...((currentNetwork?.pops || []).map((pop) => ({
+        id: pop.id,
+        label: `${pop.name} (POP)`,
+      }))),
+    ],
+    [currentNetwork?.boxes, currentNetwork?.pops]
+  );
+
+  const resolveNetworkEndpointById = useCallback((endpointId: string) => {
+    if (!endpointId) return null;
+    const box = currentNetwork?.boxes.find((item) => item.id === endpointId);
+    if (box) {
+      return { id: box.id, name: box.name, position: box.position, kind: 'box' as const };
+    }
+    const pop = (currentNetwork?.pops || []).find((item) => item.id === endpointId);
+    if (pop) {
+      return { id: pop.id, name: pop.name, position: pop.position, kind: 'pop' as const };
+    }
+    return null;
+  }, [currentNetwork?.boxes, currentNetwork?.pops]);
 
   useEffect(() => {
     if (availableModels.length === 0) return;
@@ -112,19 +177,59 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     }
     if (cableFiberCount < maxFiberCapacity && cableFiberCount > 0) return;
     setCableFiberCount(maxFiberCapacity);
-  }, [maxFiberCapacity]);
+  }, [maxFiberCapacity, cableFiberCount]);
 
-  const getRenderedCablePoints = useCallback((cable: any) => {
-    const startBox = cable.startPoint ? currentNetwork?.boxes.find((b: any) => b.id === cable.startPoint) : null;
-    const endBox = cable.endPoint ? currentNetwork?.boxes.find((b: any) => b.id === cable.endPoint) : null;
+  const getRenderedCablePoints = useCallback((cable: Cable) => {
+    const startEndpoint = cable.startPoint ? resolveNetworkEndpointById(cable.startPoint) : null;
+    const endEndpoint = cable.endPoint ? resolveNetworkEndpointById(cable.endPoint) : null;
     if (cable.path.length > 0) {
-      return cable.path.map((p: any) => ({ lat: p.lat, lng: p.lng }));
+      return cable.path.map((p) => ({ lat: p.lat, lng: p.lng }));
     }
-    if (startBox && endBox) {
-      return [startBox.position, endBox.position];
+    if (startEndpoint && endEndpoint) {
+      return [startEndpoint.position, endEndpoint.position];
     }
     return [];
-  }, [currentNetwork?.boxes]);
+  }, [resolveNetworkEndpointById]);
+
+  const isSamePosition = useCallback((a: Position, b: Position, epsilon: number = 0.000001) => {
+    return Math.abs(a.lat - b.lat) <= epsilon && Math.abs(a.lng - b.lng) <= epsilon;
+  }, []);
+
+  const buildAnchoredPath = useCallback(
+    (waypoints: Position[], start?: Position, end?: Position): Position[] => {
+      const next = [...waypoints];
+      if (start) {
+        if (next.length === 0 || !isSamePosition(next[0]!, start)) {
+          next.unshift(start);
+        } else {
+          next[0] = start;
+        }
+      }
+      if (end) {
+        if (next.length === 0 || !isSamePosition(next[next.length - 1]!, end)) {
+          next.push(end);
+        } else {
+          next[next.length - 1] = end;
+        }
+      }
+      return next;
+    },
+    [isSamePosition]
+  );
+
+  const extractEditableWaypoints = useCallback(
+    (path: Position[], start?: Position, end?: Position): Position[] => {
+      let next = [...path];
+      if (start && next.length > 0 && isSamePosition(next[0]!, start)) {
+        next = next.slice(1);
+      }
+      if (end && next.length > 0 && isSamePosition(next[next.length - 1]!, end)) {
+        next = next.slice(0, -1);
+      }
+      return next;
+    },
+    [isSamePosition]
+  );
 
   const findNearestCableForPosition = useCallback((position: Position): NearestCableHit | null => {
     if (!leafletMap.current || !currentNetwork?.cables?.length) return null;
@@ -136,7 +241,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     let bestHit: NearestCableHit | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
 
-    for (const cable of currentNetwork.cables as any[]) {
+    for (const cable of currentNetwork.cables) {
       const points = getRenderedCablePoints(cable);
       if (points.length < 2) continue;
 
@@ -174,24 +279,217 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     return bestHit;
   }, [currentNetwork?.cables, getRenderedCablePoints]);
 
+  const findNearestBoxForPosition = useCallback((position: Position): Position | null => {
+    if (!leafletMap.current || !currentNetwork?.boxes?.length) return null;
+    const map = leafletMap.current;
+    const clickPoint = map.latLngToLayerPoint([position.lat, position.lng]);
+
+    let nearest: Position | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (const box of currentNetwork.boxes) {
+      const boxPoint = map.latLngToLayerPoint([box.position.lat, box.position.lng]);
+      const dx = clickPoint.x - boxPoint.x;
+      const dy = clickPoint.y - boxPoint.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDistance) {
+        bestDistance = dist;
+        nearest = box.position;
+      }
+    }
+
+    return bestDistance <= 16 ? nearest : null;
+  }, [currentNetwork?.boxes]);
+
+  useEffect(() => {
+    findNearestCableForPositionRef.current = findNearestCableForPosition;
+  }, [findNearestCableForPosition]);
+
+  useEffect(() => {
+    findNearestBoxForPositionRef.current = findNearestBoxForPosition;
+  }, [findNearestBoxForPosition]);
+
   const attachEntityToCablePath = useCallback((cableId: string, entity: { kind: 'box' | 'reserve'; id: string; name: string }, anchor: { position: Position; pathIndex: number }) => {
-    const cable = currentNetwork?.cables.find((item: any) => item.id === cableId);
+    const cable = currentNetwork?.cables.find((item) => item.id === cableId);
     if (!cable) return;
 
     const nextPath = [...(cable.path || [])];
     const insertIndex = Math.max(0, Math.min(anchor.pathIndex, nextPath.length));
     nextPath.splice(insertIndex, 0, anchor.position);
-    const attachments = [...(cable.attachments || []), {
-      id: `${entity.kind}:${entity.id}:${Date.now()}`,
-      kind: entity.kind,
-      entityId: entity.id,
-      name: entity.name,
-      position: anchor.position,
-      pathIndex: insertIndex,
-    }];
+
+    const shiftedAttachments = (cable.attachments || []).map((attachment) => ({
+      ...attachment,
+      pathIndex: attachment.pathIndex >= insertIndex ? attachment.pathIndex + 1 : attachment.pathIndex,
+    }));
+
+    const attachments = [
+      ...shiftedAttachments.filter(
+        (attachment) => !(attachment.kind === entity.kind && attachment.entityId === entity.id)
+      ),
+      {
+        id: `${entity.kind}:${entity.id}:${Date.now()}`,
+        kind: entity.kind,
+        entityId: entity.id,
+        name: entity.name,
+        position: anchor.position,
+        pathIndex: insertIndex,
+      },
+    ];
 
     updateCable(cableId, { path: nextPath, attachments });
   }, [currentNetwork?.cables, updateCable]);
+
+  useEffect(() => {
+    const handlePointRequest = (event: Event) => {
+      const custom = event as CustomEvent<MapPointRequestDetail>;
+      if (!custom.detail?.requestId) return;
+      pendingMapPointRequestIdRef.current = custom.detail.requestId;
+      setMapPointPickActive(true);
+      setClickMode('normal');
+    };
+
+    window.addEventListener('ftth:request-map-point', handlePointRequest as EventListener);
+    return () => {
+      window.removeEventListener('ftth:request-map-point', handlePointRequest as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    const buildFiberTraceSegments = (fiberId: string): FiberTraceSegment[] => {
+      if (!currentNetwork) return [];
+      const visited = new Set<string>();
+      const segments: FiberTraceSegment[] = [];
+      let currentFiberId: string | undefined = fiberId;
+      let step = 0;
+
+      while (currentFiberId && !visited.has(currentFiberId)) {
+        visited.add(currentFiberId);
+
+        let ownerCable: Cable | undefined;
+        let ownerFiber: Fiber | undefined;
+        for (const cable of currentNetwork.cables) {
+          const match = cable.fibers.find((fiber) => fiber.id === currentFiberId);
+          if (match) {
+            ownerCable = cable;
+            ownerFiber = match;
+            break;
+          }
+        }
+
+        if (ownerCable && ownerFiber) {
+          const points = getRenderedCablePoints(ownerCable);
+          if (points.length >= 2) {
+            segments.push({
+              id: `${ownerCable.id}:${ownerFiber.id}:${step}`,
+              points,
+              color: ownerFiber.color.hex,
+              delayMs: step * 260,
+            });
+          }
+        }
+
+        const nextFiber = getFiberById(currentNetwork, currentFiberId);
+        if (nextFiber?.connectedTo && nextFiber?.fusionId) {
+          currentFiberId = nextFiber.connectedTo;
+          step += 1;
+          continue;
+        }
+
+        const popHop = resolveNextFiberThroughPop(currentNetwork, currentFiberId);
+        if (!popHop) break;
+
+        const pop = (currentNetwork.pops || []).find((item) => item.id === popHop.popId);
+        if (pop) {
+          const pulseWidth = 0.00008;
+          segments.push({
+            id: `pop:${pop.id}:${currentFiberId}:${step}`,
+            points: [
+              { lat: pop.position.lat, lng: pop.position.lng },
+              { lat: pop.position.lat + pulseWidth, lng: pop.position.lng + pulseWidth },
+            ],
+            color: ownerFiber?.color.hex || '#38bdf8',
+            delayMs: step * 260,
+          });
+        }
+
+        currentFiberId = popHop.nextFiberId;
+        step += 1;
+      }
+
+      return segments;
+    };
+
+    const handleTraceFiber = (event: Event) => {
+      const custom = event as CustomEvent<FiberTraceRequestDetail>;
+      if (!custom.detail?.fiberId) return;
+      setFiberTracePinned(Boolean(custom.detail.persist));
+      setFiberTraceSegments(buildFiberTraceSegments(custom.detail.fiberId));
+    };
+
+    const handleClearTrace = () => {
+      setFiberTracePinned(false);
+      setFiberTraceSegments([]);
+    };
+
+    window.addEventListener('ftth:trace-fiber', handleTraceFiber as EventListener);
+    window.addEventListener('ftth:trace-clear', handleClearTrace as EventListener);
+    return () => {
+      window.removeEventListener('ftth:trace-fiber', handleTraceFiber as EventListener);
+      window.removeEventListener('ftth:trace-clear', handleClearTrace as EventListener);
+    };
+  }, [currentNetwork, getRenderedCablePoints]);
+
+  useEffect(() => {
+    if (!isMapReady || !fiberTraceLayer.current) return;
+    const L = window.L;
+    if (!L) return;
+
+    fiberTraceLayer.current.clearLayers();
+    if (fiberTraceSegments.length === 0) return;
+
+    fiberTraceSegments.forEach((segment) => {
+      const tracePath = segment.points.map((point) => [point.lat, point.lng]);
+      if (tracePath.length < 2) return;
+
+      const glow = L.polyline(tracePath, {
+        color: segment.color,
+        weight: 14,
+        opacity: 0.2,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'map-fiber-trace-glow',
+      }).addTo(fiberTraceLayer.current);
+
+      const core = L.polyline(tracePath, {
+        color: segment.color,
+        weight: 8,
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'map-fiber-trace-line',
+      }).addTo(fiberTraceLayer.current);
+
+      const coreElement = core.getElement?.() as SVGElement | undefined;
+      if (coreElement) {
+        coreElement.style.animationDelay = `${segment.delayMs}ms`;
+      }
+      const glowElement = glow.getElement?.() as SVGElement | undefined;
+      if (glowElement) {
+        glowElement.style.animationDelay = `${segment.delayMs}ms`;
+      }
+    });
+
+    if (fiberTracePinned) return;
+
+    const maxDelay = Math.max(...fiberTraceSegments.map((segment) => segment.delayMs), 0);
+    const timer = window.setTimeout(() => {
+      setFiberTraceSegments([]);
+    }, maxDelay + 2600);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [fiberTraceSegments, fiberTracePinned, isMapReady]);
 
   // Inicializar mapa
   useEffect(() => {
@@ -215,6 +513,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     // Camadas para marcadores e cabos
     markersLayer.current = L.layerGroup().addTo(map);
     cablesLayer.current = L.layerGroup().addTo(map);
+    fiberTraceLayer.current = L.layerGroup().addTo(map);
 
     leafletMap.current = map;
     setIsMapReady(true);
@@ -222,10 +521,25 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     // Evento de clique no mapa
     map.on('click', (e: any) => {
       const { lat, lng } = e.latlng;
+      const pendingRequestId = pendingMapPointRequestIdRef.current;
+
+      if (pendingRequestId) {
+        window.dispatchEvent(
+          new CustomEvent('ftth:map-point-selected', {
+            detail: {
+              requestId: pendingRequestId,
+              position: { lat, lng },
+            },
+          })
+        );
+        pendingMapPointRequestIdRef.current = null;
+        setMapPointPickActive(false);
+        return;
+      }
       
       if (clickModeRef.current === 'addBox') {
         const clickPosition = { lat, lng };
-        const nearest = findNearestCableForPosition(clickPosition);
+        const nearest = findNearestCableForPositionRef.current(clickPosition);
         setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
         setNewBoxPosition(nearest ? nearest.position : clickPosition);
         setShowAddBox(true);
@@ -236,13 +550,15 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         setClickMode('normal');
       } else if (clickModeRef.current === 'addReserve') {
         const clickPosition = { lat, lng };
-        const nearest = findNearestCableForPosition(clickPosition);
+        const nearest = findNearestCableForPositionRef.current(clickPosition);
         setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
         setNewReservePosition(nearest ? nearest.position : clickPosition);
         setShowAddReserve(true);
         setClickMode('normal');
       } else if (clickModeRef.current === 'addCable' || clickModeRef.current === 'editCable') {
-        setCableWaypoints((prev: Position[]) => [...prev, { lat, lng }]);
+        const clickPosition = { lat, lng };
+        const snapped = findNearestBoxForPositionRef.current(clickPosition);
+        setCableWaypoints((prev: Position[]) => [...prev, snapped || clickPosition]);
       }
     });
 
@@ -251,6 +567,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       leafletMap.current = null;
       tileLayer.current = null;
       tempPolylineRef.current = null;
+      fiberTraceLayer.current = null;
     };
   }, []);
 
@@ -306,12 +623,12 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       ? currentNetwork?.cables.find((c: any) => c.id === editingCableId)?.endPoint
       : cableEndBox;
 
-    const startBox = currentNetwork?.boxes.find((b: any) => b.id === startBoxId);
-    const endBox = currentNetwork?.boxes.find((b: any) => b.id === endBoxId);
+    const startEndpoint = startBoxId ? resolveNetworkEndpointById(startBoxId) : null;
+    const endEndpoint = endBoxId ? resolveNetworkEndpointById(endBoxId) : null;
     const pathPoints = [
-      ...(startBox ? [[startBox.position.lat, startBox.position.lng]] : []),
+      ...(startEndpoint ? [[startEndpoint.position.lat, startEndpoint.position.lng]] : []),
       ...cableWaypoints.map((p) => [p.lat, p.lng]),
-      ...(endBox ? [[endBox.position.lat, endBox.position.lng]] : []),
+      ...(endEndpoint ? [[endEndpoint.position.lat, endEndpoint.position.lng]] : []),
     ];
 
     if (pathPoints.length < 2) {
@@ -327,12 +644,13 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     } else {
       tempPolylineRef.current = L.polyline(pathPoints, {
         color: clickMode === 'editCable' ? '#f97316' : '#2563eb',
-        weight: 3,
+        weight: 4,
         opacity: 0.85,
         dashArray: '6, 8',
+        className: 'map-3d-draft-line',
       }).addTo(leafletMap.current);
     }
-  }, [clickMode, cableWaypoints, cableStartBox, cableEndBox, editingCableId, currentNetwork?.boxes, currentNetwork?.cables]);
+  }, [clickMode, cableWaypoints, cableStartBox, cableEndBox, editingCableId, currentNetwork?.cables, resolveNetworkEndpointById]);
 
   useEffect(() => {
     if (clickMode === 'addCable' || clickMode === 'editCable') return;
@@ -343,7 +661,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     }
   }, [clickMode]);
 
-  // Criar ícone personalizado para caixa
+  // Criar icone personalizado para caixa
   const createBoxIcon = useCallback((type: 'CEO' | 'CTO' | 'DIO', status: string) => {
     const L = window.L;
     const config = BOX_ICONS[type];
@@ -352,16 +670,17 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     return L.divIcon({
       className: 'custom-box-marker',
       html: `
-        <div style="
+        <div class="map-marker-3d map-marker-box" style="
           width: ${config.size}px;
           height: ${config.size}px;
-          background: ${color};
+          background: linear-gradient(145deg, #ffffff 0%, ${color} 45%, ${color} 100%);
           border: 3px solid white;
           border-radius: ${type === 'CEO' ? '4px' : type === 'CTO' ? '8px' : '50%'};
           display: flex;
           align-items: center;
           justify-content: center;
-          box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+          box-shadow: 0 10px 18px rgba(0,0,0,0.34), inset 0 2px 4px rgba(255,255,255,0.55), inset 0 -5px 10px rgba(0,0,0,0.22);
+          transform: perspective(180px) rotateX(12deg) translateZ(0);
           cursor: pointer;
         ">
           <svg width="${config.size * 0.6}" height="${config.size * 0.6}" viewBox="0 0 24 24" fill="white">
@@ -376,6 +695,85 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     });
   }, []);
 
+  const handleStartEditCablePath = useCallback((cableId: string) => {
+    if (!currentNetwork) return;
+    const cable = currentNetwork.cables.find((item) => item.id === cableId);
+    if (!cable) return;
+    const startEndpoint = cable.startPoint ? resolveNetworkEndpointById(cable.startPoint) : null;
+    const endEndpoint = cable.endPoint ? resolveNetworkEndpointById(cable.endPoint) : null;
+    setEditingCableId(cable.id);
+    setCableStartBox(cable.startPoint);
+    setCableEndBox(cable.endPoint);
+    setCableType(cable.type);
+    setCableModel(cable.model || 'AS-80');
+    setLooseTubeCount(cable.looseTubeCount || 1);
+    setFibersPerTube(cable.fibersPerTube || 12);
+    setCableFiberCount(cable.fiberCount);
+    setCableWaypoints(extractEditableWaypoints(cable.path || [], startEndpoint?.position, endEndpoint?.position));
+    setShowAddCable(false);
+    setClickMode('editCable');
+  }, [currentNetwork, extractEditableWaypoints, resolveNetworkEndpointById]);
+
+  useEffect(() => {
+    const tryOpenCableForEdit = (cableId: string, attemptsLeft: number) => {
+      const cableExists = (currentNetwork?.cables || []).some((cable) => cable.id === cableId);
+      if (cableExists) {
+        handleStartEditCablePath(cableId);
+        return;
+      }
+      if (attemptsLeft <= 0) return;
+      window.setTimeout(() => tryOpenCableForEdit(cableId, attemptsLeft - 1), 120);
+    };
+
+    const handleEditCableRequest = (event: Event) => {
+      const custom = event as CustomEvent<EditCableRequestDetail>;
+      if (!custom.detail?.cableId) return;
+      tryOpenCableForEdit(custom.detail.cableId, 8);
+    };
+
+    window.addEventListener('ftth:edit-cable-path', handleEditCableRequest as EventListener);
+    return () => {
+      window.removeEventListener('ftth:edit-cable-path', handleEditCableRequest as EventListener);
+    };
+  }, [currentNetwork?.cables, handleStartEditCablePath]);
+
+  useEffect(() => {
+    const handleStartMapCableDrawing = (event: Event) => {
+      const custom = event as CustomEvent<StartMapCableDrawingDetail>;
+      const detail = custom.detail;
+      if (!detail) return;
+
+      const nextType = detail.type || 'distribution';
+      const nextLooseTubeCount = Math.max(1, detail.looseTubeCount || 1);
+      const nextFibersPerTube = Math.max(1, detail.fibersPerTube || 12);
+      const nextFiberCapacity = nextLooseTubeCount * nextFibersPerTube;
+      const nextFiberCount = Math.max(1, Math.min(detail.fiberCount || 12, nextFiberCapacity));
+
+      setEditingCableId('');
+      setShowAddCable(false);
+      setCableWaypoints([]);
+      setCableName(detail.name || '');
+      setCableType(nextType);
+      setCableModel(detail.model || CABLE_MODEL_OPTIONS.find((item) => item.category === nextType)?.id || 'AS-80');
+      setLooseTubeCount(nextLooseTubeCount);
+      setFibersPerTube(nextFibersPerTube);
+      setCableFiberCount(nextFiberCount);
+      setCableStartBox(detail.startPoint || '');
+      setCableEndBox(detail.endPoint || '');
+      setClickMode('addCable');
+
+      if (tempPolylineRef.current) {
+        tempPolylineRef.current.remove();
+        tempPolylineRef.current = null;
+      }
+    };
+
+    window.addEventListener('ftth:start-map-cable-drawing', handleStartMapCableDrawing as EventListener);
+    return () => {
+      window.removeEventListener('ftth:start-map-cable-drawing', handleStartMapCableDrawing as EventListener);
+    };
+  }, []);
+
   // Atualizar marcadores no mapa
   useEffect(() => {
     if (!isMapReady || !markersLayer.current) return;
@@ -383,20 +781,21 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     const L = window.L;
     markersLayer.current.clearLayers();
 
-    (currentNetwork?.pops || []).forEach((pop: any) => {
+    (currentNetwork?.pops || []).forEach((pop: Pop) => {
       const popIcon = L.divIcon({
         className: 'custom-pop-marker',
         html: `
-          <div style="
+          <div class="map-marker-3d map-marker-pop" style="
             width: 26px;
             height: 26px;
-            background: #7c3aed;
+            background: linear-gradient(145deg, #efe7ff 0%, #7c3aed 55%, #5b21b6 100%);
             border: 2px solid white;
             border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+            box-shadow: 0 9px 16px rgba(0,0,0,0.34), inset 0 2px 3px rgba(255,255,255,0.45), inset 0 -5px 10px rgba(0,0,0,0.2);
+            transform: perspective(180px) rotateX(12deg) translateZ(0);
             color: white;
             font-size: 10px;
             font-weight: 700;
@@ -407,7 +806,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       });
 
       const marker = L.marker([pop.position.lat, pop.position.lng], { icon: popIcon });
-      const city = (currentNetwork?.cities || []).find((item: any) => item.id === pop.cityId);
+      const city = (currentNetwork?.cities || []).find((item: City) => item.id === pop.cityId);
       marker.bindPopup(`
         <div style="min-width: 200px;">
           <h3 style="margin: 0 0 8px 0; font-weight: bold;">${pop.name}</h3>
@@ -415,14 +814,14 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
           <p style="margin: 4px 0;"><strong>DIO:</strong> ${(pop.dios || []).length}</p>
           <p style="margin: 4px 0;"><strong>OLT:</strong> ${(pop.olts || []).length}</p>
         </div>
-      `);
+      `, { className: 'map-3d-popup' });
       marker.on('click', () => {
         selectPop(pop);
       });
       marker.addTo(markersLayer.current);
     });
 
-    currentNetwork?.boxes.forEach((box: any) => {
+    currentNetwork?.boxes.forEach((box: Box) => {
       const marker = L.marker([box.position.lat, box.position.lng], {
         icon: createBoxIcon(box.type, box.status),
       });
@@ -433,46 +832,70 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
           <p style="margin: 4px 0;"><strong>Tipo:</strong> ${box.type}</p>
           <p style="margin: 4px 0;"><strong>Capacidade:</strong> ${box.capacity} fibras</p>
           <p style="margin: 4px 0;"><strong>Status:</strong> ${box.status}</p>
-          <p style="margin: 4px 0;"><strong>Fibras usadas:</strong> ${box.fibers.filter((f: any) => f.status === 'active').length}</p>
-          ${box.address ? `<p style="margin: 4px 0;"><strong>Endereço:</strong> ${box.address}</p>` : ''}
+          <p style="margin: 4px 0;"><strong>Fibras usadas:</strong> ${box.fibers.filter((f) => f.status === 'active').length}</p>
+          ${box.address ? `<p style="margin: 4px 0;"><strong>Endereco:</strong> ${box.address}</p>` : ''}
         </div>
       `;
 
-      marker.bindPopup(popupContent);
+      marker.bindPopup(popupContent, { className: 'map-3d-popup' });
       
       marker.on('click', () => {
         selectBox(box);
       });
 
       marker.on('contextmenu', (e: any) => {
+        const container = document.createElement('div');
+        container.style.display = 'flex';
+        container.style.gap = '8px';
+
+        const editButton = document.createElement('button');
+        editButton.textContent = 'Editar';
+        editButton.style.padding = '4px 8px';
+        editButton.onclick = () => {
+          selectBox(box);
+          setEditing(true);
+          leafletMap.current?.closePopup();
+        };
+
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = 'Excluir';
+        deleteButton.style.padding = '4px 8px';
+        deleteButton.style.background = '#ff4444';
+        deleteButton.style.color = 'white';
+        deleteButton.onclick = () => {
+          if (window.confirm('Tem certeza que deseja excluir esta caixa?')) {
+            removeBox(box.id);
+          }
+          leafletMap.current?.closePopup();
+        };
+
+        container.appendChild(editButton);
+        container.appendChild(deleteButton);
+
         L.popup()
           .setLatLng(e.latlng)
-          .setContent(`
-            <div style="display: flex; gap: 8px;">
-              <button onclick="window.editBox('${box.id}')" style="padding: 4px 8px;">Editar</button>
-              <button onclick="window.deleteBox('${box.id}')" style="padding: 4px 8px; background: #ff4444; color: white;">Excluir</button>
-            </div>
-          `)
+          .setContent(container)
           .openOn(leafletMap.current);
       });
 
       marker.addTo(markersLayer.current);
     });
 
-    (currentNetwork?.reserves || []).forEach((reserve: any) => {
+    (currentNetwork?.reserves || []).forEach((reserve: ReservePoint) => {
       const reserveIcon = L.divIcon({
         className: 'custom-reserve-marker',
         html: `
-          <div style="
+          <div class="map-marker-3d map-marker-reserve" style="
             width: 22px;
             height: 22px;
-            background: #ca8a04;
+            background: linear-gradient(145deg, #fff5cc 0%, #ca8a04 60%, #a16207 100%);
             border: 2px solid white;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            box-shadow: 0 8px 14px rgba(0,0,0,0.3), inset 0 2px 4px rgba(255,255,255,0.5), inset 0 -4px 8px rgba(0,0,0,0.2);
+            transform: perspective(180px) rotateX(12deg) translateZ(0);
             color: white;
             font-size: 12px;
             font-weight: 700;
@@ -489,10 +912,10 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
           <p style="margin: 4px 0;"><strong>Tipo:</strong> Reserva</p>
           <p style="margin: 4px 0;"><strong>Status:</strong> ${reserve.status}</p>
         </div>
-      `);
+      `, { className: 'map-3d-popup' });
       marker.addTo(markersLayer.current);
     });
-  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, isMapReady, createBoxIcon, selectBox, selectPop]);
+  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox]);
 
   // Atualizar cabos no mapa
   useEffect(() => {
@@ -501,22 +924,36 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     const L = window.L;
     cablesLayer.current.clearLayers();
 
-    currentNetwork?.cables.forEach((cable: any) => {
-      const startBox = cable.startPoint ? currentNetwork.boxes.find((b: any) => b.id === cable.startPoint) : null;
-      const endBox = cable.endPoint ? currentNetwork.boxes.find((b: any) => b.id === cable.endPoint) : null;
+    currentNetwork?.cables.forEach((cable: Cable) => {
+      const startEndpoint = cable.startPoint ? resolveNetworkEndpointById(cable.startPoint) : null;
+      const endEndpoint = cable.endPoint ? resolveNetworkEndpointById(cable.endPoint) : null;
 
       const path = cable.path.length > 0
-        ? cable.path.map((p: any) => [p.lat, p.lng])
-        : startBox && endBox
-          ? [[startBox.position.lat, startBox.position.lng], [endBox.position.lat, endBox.position.lng]]
+        ? cable.path.map((p) => [p.lat, p.lng])
+        : startEndpoint && endEndpoint
+          ? [[startEndpoint.position.lat, startEndpoint.position.lng], [endEndpoint.position.lat, endEndpoint.position.lng]]
           : [];
       if (path.length < 2) return;
 
+      const cableBaseWeight = cable.type === 'backbone' ? 6 : cable.type === 'feeder' ? 5 : cable.type === 'distribution' ? 4 : 2;
+
+      const cableGlow = L.polyline(path, {
+        color: cable.status === 'active' ? '#86efac' : '#cbd5e1',
+        weight: cableBaseWeight + 6,
+        opacity: 0.3,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'map-3d-cable-glow',
+      });
+
       const polyline = L.polyline(path, {
         color: cable.status === 'active' ? '#00AA00' : '#999999',
-        weight: cable.type === 'backbone' ? 6 : cable.type === 'feeder' ? 5 : cable.type === 'distribution' ? 4 : 2,
+        weight: cableBaseWeight,
         opacity: 0.8,
         dashArray: cable.status === 'projected' ? '10, 10' : undefined,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'map-3d-cable-core',
       });
 
       polyline.bindPopup(`
@@ -529,17 +966,28 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
           <p style="margin: 4px 0;"><strong>Fibras por tubo:</strong> ${cable.fibersPerTube || 12}</p>
           <p style="margin: 4px 0;"><strong>Comprimento:</strong> ${cable.length}m</p>
           <p style="margin: 4px 0;"><strong>Status:</strong> ${cable.status}</p>
-          <p style="margin: 4px 0;"><strong>Origem:</strong> ${startBox?.name || 'Nao definida'}</p>
-          <p style="margin: 4px 0;"><strong>Destino:</strong> ${endBox?.name || 'Nao definido'}</p>
-          <button onclick="window.editCablePath('${cable.id}')" style="margin-top: 8px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
-            Editar traçado
+          <p style="margin: 4px 0;"><strong>Origem:</strong> ${startEndpoint?.name || 'Nao definida'}</p>
+          <p style="margin: 4px 0;"><strong>Destino:</strong> ${endEndpoint?.name || 'Nao definido'}</p>
+          <button data-edit-cable-id="${cable.id}" style="margin-top: 8px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
+            Editar tracado
           </button>
         </div>
-      `);
+      `, { className: 'map-3d-popup' });
 
+      polyline.on('popupopen', (event: any) => {
+        const popupElement = event.popup?.getElement?.() as HTMLElement | undefined;
+        const button = popupElement?.querySelector<HTMLButtonElement>(`button[data-edit-cable-id="${cable.id}"]`);
+        if (!button) return;
+        button.onclick = () => {
+          handleStartEditCablePath(cable.id);
+          leafletMap.current?.closePopup();
+        };
+      });
+
+      cableGlow.addTo(cablesLayer.current);
       polyline.addTo(cablesLayer.current);
     });
-  }, [currentNetwork?.cables, currentNetwork?.boxes, isMapReady]);
+  }, [currentNetwork?.cables, isMapReady, handleStartEditCablePath, resolveNetworkEndpointById]);
 
   // Handlers para adicionar caixa
   const handleAddBox = () => {
@@ -610,12 +1058,13 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
 
   // Handlers para adicionar cabo
   const handleAddCable = () => {
-    const startBox = cableStartBox ? currentNetwork?.boxes.find((b: any) => b.id === cableStartBox) : null;
-    const endBox = cableEndBox ? currentNetwork?.boxes.find((b: any) => b.id === cableEndBox) : null;
-    if (cableWaypoints.length < 2 && (!startBox || !endBox)) return;
+    const startEndpoint = cableStartBox ? resolveNetworkEndpointById(cableStartBox) : null;
+    const endEndpoint = cableEndBox ? resolveNetworkEndpointById(cableEndBox) : null;
+    if (cableWaypoints.length < 2 && (!startEndpoint || !endEndpoint)) return;
+    const anchoredPath = buildAnchoredPath(cableWaypoints, startEndpoint?.position, endEndpoint?.position);
 
     addCable({
-      name: cableName.trim() || (startBox && endBox ? `Cabo ${startBox.name} -> ${endBox.name}` : `Cabo Livre ${new Date().toLocaleTimeString('pt-BR')}`),
+      name: cableName.trim() || (startEndpoint && endEndpoint ? `Cabo ${startEndpoint.name} -> ${endEndpoint.name}` : `Cabo Livre ${new Date().toLocaleTimeString('pt-BR')}`),
       type: cableType,
       model: cableModel,
       fiberCount: cableFiberCount,
@@ -623,8 +1072,8 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       fibersPerTube,
       startPoint: cableStartBox || '',
       endPoint: cableEndBox || '',
-      path: cableWaypoints,
-      length: calculateCableLength(cableWaypoints, startBox?.position, endBox?.position),
+      path: anchoredPath,
+      length: calculateCableLength(anchoredPath),
       status: 'active',
       color: '#00AA00',
     });
@@ -636,12 +1085,13 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     setLooseTubeCount(1);
     setFibersPerTube(12);
     setCableFiberCount(12);
-    setCableModel(CABLE_MODEL_OPTIONS.find((item) => item.category === cableType)?.id || 'AS-80');
+    setCableModel(CABLE_MODEL_OPTIONS.find((item) => item.category === 'distribution')?.id || 'AS-80');
     setCableWaypoints([]);
     if (tempPolylineRef.current) {
       tempPolylineRef.current.remove();
       tempPolylineRef.current = null;
     }
+    setClickMode('normal');
   };
 
   const calculateCableLength = (waypoints: Position[], start?: Position, end?: Position): number => {
@@ -677,23 +1127,6 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     setCableWaypoints([]);
   };
 
-  const handleStartEditCablePath = (cableId: string) => {
-    if (!currentNetwork) return;
-    const cable = currentNetwork.cables.find((item: any) => item.id === cableId);
-    if (!cable) return;
-    setEditingCableId(cable.id);
-    setCableStartBox(cable.startPoint);
-    setCableEndBox(cable.endPoint);
-    setCableType(cable.type);
-    setCableModel(cable.model || 'AS-80');
-    setLooseTubeCount(cable.looseTubeCount || 1);
-    setFibersPerTube(cable.fibersPerTube || 12);
-    setCableFiberCount(cable.fiberCount);
-    setCableWaypoints(cable.path || []);
-    setShowAddCable(false);
-    setClickMode('editCable');
-  };
-
   const handleCancelEditCablePath = () => {
     setEditingCableId('');
     setCableWaypoints([]);
@@ -706,40 +1139,21 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
 
   const handleSaveEditedCablePath = () => {
     if (!currentNetwork || !editingCableId) return;
-    const cable = currentNetwork.cables.find((item: any) => item.id === editingCableId);
+    const cable = currentNetwork.cables.find((item) => item.id === editingCableId);
     if (!cable) return;
-    const startBox = cable.startPoint ? currentNetwork.boxes.find((b: any) => b.id === cable.startPoint) : null;
-    const endBox = cable.endPoint ? currentNetwork.boxes.find((b: any) => b.id === cable.endPoint) : null;
+    const startEndpoint = cable.startPoint ? resolveNetworkEndpointById(cable.startPoint) : null;
+    const endEndpoint = cable.endPoint ? resolveNetworkEndpointById(cable.endPoint) : null;
+    const anchoredPath = buildAnchoredPath(cableWaypoints, startEndpoint?.position, endEndpoint?.position);
 
     updateCable(cable.id, {
-      path: cableWaypoints,
-      length: calculateCableLength(cableWaypoints, startBox?.position, endBox?.position),
+      path: anchoredPath,
+      length: calculateCableLength(anchoredPath),
     });
 
     handleCancelEditCablePath();
   };
 
-  // Expor funções para o popup
-  useEffect(() => {
-    (window as any).editBox = (boxId: string) => {
-      const box = currentNetwork?.boxes.find((b: any) => b.id === boxId);
-      if (box) {
-        selectBox(box);
-        setEditing(true);
-      }
-    };
-    
-    (window as any).deleteBox = (boxId: string) => {
-      if (confirm('Tem certeza que deseja excluir esta caixa?')) {
-        removeBox(boxId);
-      }
-    };
-    
-    (window as any).editCablePath = (cableId: string) => {
-      handleStartEditCablePath(cableId);
-    };
-  }, [currentNetwork?.boxes, selectBox, setEditing, removeBox, handleStartEditCablePath]);
-
+  // Expor funcoes para o popup
   return (
     <div className="relative w-full">
       {/* Barra de ferramentas */}
@@ -753,7 +1167,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
           {mapView === 'street' ? (
             <>
               <Satellite className="w-4 h-4 mr-1" />
-              Satélite
+              Satelite
             </>
           ) : (
             <>
@@ -838,7 +1252,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         </Button>
       </div>
 
-      {/* Informações da rede */}
+      {/* InformacÃµes da rede */}
       {currentNetwork && (
         <div className="absolute top-4 right-4 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg p-3 shadow-lg">
           <h3 className="font-bold text-sm">{currentNetwork.name}</h3>
@@ -846,7 +1260,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
             <p>Caixas: {currentNetwork.boxes.length}</p>
             <p>Reservas: {(currentNetwork.reserves || []).length}</p>
             <p>Cabos: {currentNetwork.cables.length}</p>
-            <p>Fusões: {currentNetwork.fusions.length}</p>
+            <p>Fusoes: {currentNetwork.fusions.length}</p>
           </div>
         </div>
       )}
@@ -854,13 +1268,13 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       {(clickMode === 'addCable' || clickMode === 'editCable') && (
         <div className="absolute left-4 bottom-4 z-[1000] bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-lg border w-[320px]">
           <h4 className="text-sm font-semibold">
-            {clickMode === 'editCable' ? 'Editando traçado do cabo' : 'Desenhando novo cabo'}
+            {clickMode === 'editCable' ? 'Editando tracado do cabo' : 'Desenhando novo cabo'}
           </h4>
           <p className="text-xs text-gray-600 mt-1">
-            Clique no mapa para adicionar pontos intermediários.
+            Clique no mapa para adicionar pontos intermediarios.
           </p>
           <p className="text-xs mt-2">
-            Pontos no traçado: <strong>{cableWaypoints.length}</strong>
+            Pontos no tracado: <strong>{cableWaypoints.length}</strong>
           </p>
           <div className="flex gap-2 mt-3 flex-wrap">
             <Button size="sm" variant="outline" onClick={handleUndoLastWaypoint} disabled={cableWaypoints.length === 0}>
@@ -881,7 +1295,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
             {clickMode === 'editCable' && (
               <>
                 <Button size="sm" onClick={handleSaveEditedCablePath}>
-                  Salvar traçado
+                  Salvar tracado
                 </Button>
                 <Button size="sm" variant="outline" onClick={handleCancelEditCablePath}>
                   Cancelar
@@ -892,19 +1306,26 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         </div>
       )}
 
+      {mapPointPickActive && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1200] bg-blue-600 text-white px-3 py-2 rounded-md shadow">
+          Clique no mapa para selecionar a posicao
+        </div>
+      )}
+
       {/* Container do mapa */}
       <div 
         ref={mapRef} 
         style={{ height, width: '100%' }}
-        className="rounded-lg border overflow-hidden"
+        className="rounded-lg border overflow-hidden map-3d-surface"
       />
 
       {/* Modal de adicionar caixa */}
       <Dialog open={showAddPop} onOpenChange={setShowAddPop}>
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="w-[min(96vw,680px)] max-w-[680px] max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>Adicionar POP</DialogTitle>
           </DialogHeader>
+          <ScrollArea className="max-h-[calc(90vh-140px)] px-6 pb-4">
           <div className="space-y-4">
             <div>
               <Label>Nome do POP</Label>
@@ -941,15 +1362,17 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
               <Button variant="outline" onClick={() => setShowAddPop(false)}>Cancelar</Button>
             </div>
           </div>
+          </ScrollArea>
         </DialogContent>
       </Dialog>
 
       {/* Modal de adicionar caixa */}
       <Dialog open={showAddBox} onOpenChange={setShowAddBox}>
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="w-[min(96vw,680px)] max-w-[680px] max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>Adicionar Nova Caixa</DialogTitle>
           </DialogHeader>
+          <ScrollArea className="max-h-[calc(90vh-140px)] px-6 pb-4">
           <div className="space-y-4">
             <div>
               <Label>Nome</Label>
@@ -967,8 +1390,8 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="CEO">CEO - Central Office</SelectItem>
-                  <SelectItem value="CTO">CTO - Caixa de Terminação</SelectItem>
-                  <SelectItem value="DIO">DIO - Distribuição Interna</SelectItem>
+                  <SelectItem value="CTO">CTO - Caixa de Terminacao</SelectItem>
+                  <SelectItem value="DIO">DIO - distribuicao Interna</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -996,7 +1419,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
             </div>
             {pendingAttach && (
               <div className="text-xs rounded border bg-amber-50 text-amber-800 px-3 py-2">
-                Caixa será inserida no traçado do cabo selecionado (opção de sangria/passagem direta disponível no detalhe da caixa).
+                Caixa sera inserida no tracado do cabo selecionado (opcao de sangria/passagem direta disponivel no detalhe da caixa).
               </div>
             )}
             <div className="flex gap-2">
@@ -1007,14 +1430,16 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
               }}>Cancelar</Button>
             </div>
           </div>
+          </ScrollArea>
         </DialogContent>
       </Dialog>
 
       <Dialog open={showAddReserve} onOpenChange={setShowAddReserve}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="w-[min(96vw,680px)] max-w-[680px] max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>Adicionar Reserva</DialogTitle>
           </DialogHeader>
+          <ScrollArea className="max-h-[calc(90vh-140px)] px-6 pb-4">
           <div className="space-y-4">
             <div>
               <Label>Nome</Label>
@@ -1026,7 +1451,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
             </div>
             {pendingAttach && (
               <div className="text-xs rounded border bg-amber-50 text-amber-800 px-3 py-2">
-                Reserva será inserida no traçado do cabo selecionado.
+                Reserva sera inserida no tracado do cabo selecionado.
               </div>
             )}
             <div className="flex gap-2">
@@ -1046,6 +1471,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
               </Button>
             </div>
           </div>
+          </ScrollArea>
         </DialogContent>
       </Dialog>
 
@@ -1063,34 +1489,34 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <Label>Caixa de Origem</Label>
+              <Label>Origem (caixa ou POP)</Label>
               <Select value={cableStartBox || '__none__'} onValueChange={(v) => setCableStartBox(v === '__none__' ? '' : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione..." />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">Sem origem</SelectItem>
-                  {currentNetwork?.boxes.map((box: any) => (
-                    <SelectItem key={box.id} value={box.id}>
-                      {box.name} ({box.type})
+                  {cableEndpointOptions.map((endpoint) => (
+                    <SelectItem key={endpoint.id} value={endpoint.id}>
+                      {endpoint.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>Caixa de Destino</Label>
+              <Label>Destino (caixa ou POP)</Label>
               <Select value={cableEndBox || '__none__'} onValueChange={(v) => setCableEndBox(v === '__none__' ? '' : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione..." />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">Sem destino</SelectItem>
-                  {currentNetwork?.boxes
-                    .filter((b: any) => b.id !== cableStartBox)
-                    .map((box: any) => (
-                      <SelectItem key={box.id} value={box.id}>
-                        {box.name} ({box.type})
+                  {cableEndpointOptions
+                    .filter((endpoint) => endpoint.id !== cableStartBox)
+                    .map((endpoint) => (
+                      <SelectItem key={endpoint.id} value={endpoint.id}>
+                        {endpoint.label}
                       </SelectItem>
                     ))}
                 </SelectContent>
@@ -1112,8 +1538,8 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="drop">Drop (Última milha)</SelectItem>
-                  <SelectItem value="distribution">Distribuição</SelectItem>
+                  <SelectItem value="drop">Drop (Ãšltima milha)</SelectItem>
+                  <SelectItem value="distribution">distribuicao</SelectItem>
                   <SelectItem value="feeder">Feeder</SelectItem>
                   <SelectItem value="backbone">Backbone</SelectItem>
                 </SelectContent>
@@ -1198,6 +1624,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     </div>
   );
 }
+
 
 
 

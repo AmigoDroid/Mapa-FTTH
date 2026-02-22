@@ -26,7 +26,23 @@ import type {
   ContinuityTest,
   Client,
 } from '@/types/ftth';
-import { FIBER_COLORS } from '@/types/ftth';
+import {
+  attachFusionToNetwork,
+  calculateDistanceMeters,
+  calculateGponLoss,
+  detachFusionFromNetwork,
+  generateFibers,
+  generateId,
+  getBoxEndpointFiberIds,
+  getFiberById,
+  getFiberOwnerLabel,
+  getFusionAttenuation,
+  getLocalFusionForEndpoint,
+  getPopEndpointOwner,
+  estimateSignalAtPopForFiber,
+  resolveNextFiberThroughPop,
+  getSplitterPortCount,
+} from '@/store/networkUtils';
 
 interface NetworkState {
   currentNetwork: Network | null;
@@ -100,301 +116,28 @@ interface NetworkActions {
   setActiveFusion: (fusion: { boxA: Box; boxB: Box; fiberA: Fiber; fiberB: Fiber } | null) => void;
   getFiberPath: (fiberId: string) => { box: Box; cable?: Cable; fusion?: Fusion }[];
   getFiberContinuity: (fiberId: string) => { connected: boolean; path: string[]; attenuation: number };
+  getFiberRouteReport: (fiberId: string) => {
+    connected: boolean;
+    path: string[];
+    attenuation: number;
+    fusionCount: number;
+    cableCount: number;
+    boxCount: number;
+    splitterCount: number;
+    popCount: number;
+    signalAtPop?: {
+      popName: string;
+      oltEndpointId: string;
+      txPowerDbm: number;
+      popLossDb: number;
+      estimatedRxDbm: number;
+    };
+  };
   generateFibers: (count: number, startNumber?: number) => Fiber[];
   importNetwork: (networkData: string) => boolean;
   exportNetwork: () => string;
   resetNetwork: () => void;
 }
-
-const generateId = () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-
-const generateFibers = (count: number, startNumber: number = 1, fibersPerTube: number = 12): Fiber[] => {
-  const safeFibersPerTube = Math.max(1, fibersPerTube);
-  return Array.from({ length: count }, (_, i) => {
-    const fiberNum = startNumber + i;
-    const colorIndex = (fiberNum - 1) % 12;
-    const localIndex = i;
-    const tubeNumber = Math.floor(localIndex / safeFibersPerTube) + 1;
-    
-    return {
-      id: generateId(),
-      number: fiberNum,
-      color: FIBER_COLORS[colorIndex],
-      status: 'inactive',
-      tubeNumber,
-    } as Fiber;
-  });
-};
-
-const calculateDistanceMeters = (a: Position, b: Position) => {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const q =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((a.lat * Math.PI) / 180) *
-      Math.cos((b.lat * Math.PI) / 180) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-  return R * (2 * Math.atan2(Math.sqrt(q), Math.sqrt(1 - q)));
-};
-
-const calculateGponLoss = (
-  comprimentoMetros: number,
-  { emendas = 0, conectores = 0, splitterDb = 0 }: { emendas?: number; conectores?: number; splitterDb?: number } = {}
-) => {
-  const km = comprimentoMetros / 1000;
-  const perdaFibra = km * 0.25;
-  const perdaEmendas = emendas * 0.1;
-  const perdaConectores = conectores * 0.2;
-  return perdaFibra + perdaEmendas + perdaConectores + splitterDb;
-};
-
-const getFiberById = (network: Network, fiberId: string): Fiber | undefined => {
-  for (const box of network.boxes) {
-    const boxFiber = box.fibers.find((fiber) => fiber.id === fiberId);
-    if (boxFiber) return boxFiber;
-
-    for (const splitter of box.splitters || []) {
-      const inputFiber = splitter.inputFibers.find((fiber) => fiber.id === fiberId);
-      if (inputFiber) return inputFiber;
-
-      const outputFiber = splitter.outputFibers.find((fiber) => fiber.id === fiberId);
-      if (outputFiber) return outputFiber;
-    }
-  }
-
-  for (const cable of network.cables) {
-    const cableFiber = cable.fibers.find((fiber) => fiber.id === fiberId);
-    if (cableFiber) return cableFiber;
-  }
-
-  return undefined;
-};
-
-const getFiberOwnerLabel = (network: Network, fiberId: string): string | null => {
-  for (const box of network.boxes) {
-    const boxFiber = box.fibers.find((fiber) => fiber.id === fiberId);
-    if (boxFiber) return `${box.name} (Caixa)`;
-
-    for (const splitter of box.splitters || []) {
-      const inputFiber = splitter.inputFibers.find((fiber) => fiber.id === fiberId);
-      if (inputFiber) return `${box.name} - ${splitter.name} (IN)`;
-
-      const outputFiber = splitter.outputFibers.find((fiber) => fiber.id === fiberId);
-      if (outputFiber) return `${box.name} - ${splitter.name} (OUT)`;
-    }
-  }
-
-  for (const cable of network.cables) {
-    const cableFiber = cable.fibers.find((fiber) => fiber.id === fiberId);
-    if (cableFiber) return `${cable.name} (Cabo)`;
-  }
-
-  return null;
-};
-
-const getFusionAttenuation = (fusion: Fusion): number => {
-  if (typeof fusion.attenuation === 'number') return fusion.attenuation;
-  if (fusion.fusionType === 'connector') return 0.2;
-  if (fusion.fusionType === 'mechanical') return 0.2;
-  return 0.1;
-};
-
-const getPopEndpointOwner = (pop: Pop, endpointId: string): { kind: 'dio' | 'cable' | 'olt' | 'switch' | 'router'; id: string } | null => {
-  if (endpointId.startsWith('dio:')) {
-    const parts = endpointId.split(':');
-    const dioId = parts[1];
-    if (!dioId) return null;
-    return pop.dios.some((dio) => dio.id === dioId) ? { kind: 'dio', id: dioId } : null;
-  }
-
-  if (endpointId.startsWith('cable:')) {
-    const parts = endpointId.split(':');
-    const cableId = parts[1];
-    if (!cableId) return null;
-    return pop.cables.some((cable) => cable.id === cableId) ? { kind: 'cable', id: cableId } : null;
-  }
-
-  if (endpointId.startsWith('olt:')) {
-    const parts = endpointId.split(':');
-    const oltId = parts[1];
-    if (!oltId) return null;
-    return pop.olts.some((olt) => olt.id === oltId) ? { kind: 'olt', id: oltId } : null;
-  }
-
-  if (endpointId.startsWith('switch:')) {
-    const parts = endpointId.split(':');
-    const switchId = parts[1];
-    if (!switchId) return null;
-    return pop.switches?.some((sw) => sw.id === switchId) ? { kind: 'switch', id: switchId } : null;
-  }
-
-  if (endpointId.startsWith('router:')) {
-    const parts = endpointId.split(':');
-    const routerId = parts[1];
-    if (!routerId) return null;
-    return pop.routers?.some((router) => router.id === routerId) ? { kind: 'router', id: routerId } : null;
-  }
-
-  return null;
-};
-
-const updateFiberInNetwork = (
-  network: Network,
-  fiberId: string,
-  updater: (fiber: Fiber) => Fiber
-): Network => {
-  let changed = false;
-
-  const boxes = network.boxes.map((box) => {
-    let boxChanged = false;
-    const fibers = box.fibers.map((fiber) => {
-      if (fiber.id !== fiberId) return fiber;
-      boxChanged = true;
-      changed = true;
-      return updater(fiber);
-    });
-
-    const splitters = (box.splitters || []).map((splitter) => {
-      let splitterChanged = false;
-      const inputFibers = splitter.inputFibers.map((fiber) => {
-        if (fiber.id !== fiberId) return fiber;
-        splitterChanged = true;
-        changed = true;
-        return updater(fiber);
-      });
-      const outputFibers = splitter.outputFibers.map((fiber) => {
-        if (fiber.id !== fiberId) return fiber;
-        splitterChanged = true;
-        changed = true;
-        return updater(fiber);
-      });
-
-      if (!splitterChanged) return splitter;
-      boxChanged = true;
-      return { ...splitter, inputFibers, outputFibers };
-    });
-
-    if (!boxChanged) return box;
-    return { ...box, fibers, splitters };
-  });
-
-  const cables = network.cables.map((cable) => {
-    let cableChanged = false;
-    const fibers = cable.fibers.map((fiber) => {
-      if (fiber.id !== fiberId) return fiber;
-      cableChanged = true;
-      changed = true;
-      return updater(fiber);
-    });
-    if (!cableChanged) return cable;
-    return { ...cable, fibers };
-  });
-
-  if (!changed) return network;
-  return { ...network, boxes, cables };
-};
-
-const attachFusionToNetwork = (network: Network, fusion: Fusion): Network => {
-  let next = updateFiberInNetwork(network, fusion.fiberAId, (fiber) => ({
-    ...fiber,
-    connectedTo: fusion.fiberBId,
-    fusionId: fusion.id,
-    status: fiber.status === 'faulty' ? fiber.status : 'active',
-  }));
-
-  next = updateFiberInNetwork(next, fusion.fiberBId, (fiber) => ({
-    ...fiber,
-    connectedTo: fusion.fiberAId,
-    fusionId: fusion.id,
-    status: fiber.status === 'faulty' ? fiber.status : 'active',
-  }));
-
-  const fusionBoxes = new Set([fusion.boxAId, fusion.boxBId]);
-  const boxes = next.boxes.map((box) =>
-    fusionBoxes.has(box.id) ? { ...box, fusions: [...box.fusions, fusion] } : box
-  );
-
-  return {
-    ...next,
-    boxes,
-    fusions: [...next.fusions, fusion],
-    updatedAt: new Date().toISOString(),
-  };
-};
-
-const detachFusionFromNetwork = (network: Network, fusionId: string): Network => {
-  const fusion = network.fusions.find((item) => item.id === fusionId);
-  if (!fusion) return network;
-
-  let next = updateFiberInNetwork(network, fusion.fiberAId, (fiber) => ({
-    ...fiber,
-    connectedTo: undefined,
-    fusionId: undefined,
-    status: fiber.status === 'faulty' ? fiber.status : 'inactive',
-  }));
-
-  next = updateFiberInNetwork(next, fusion.fiberBId, (fiber) => ({
-    ...fiber,
-    connectedTo: undefined,
-    fusionId: undefined,
-    status: fiber.status === 'faulty' ? fiber.status : 'inactive',
-  }));
-
-  const fusionBoxes = new Set([fusion.boxAId, fusion.boxBId]);
-  const boxes = next.boxes.map((box) =>
-    fusionBoxes.has(box.id)
-      ? { ...box, fusions: box.fusions.filter((item) => item.id !== fusionId) }
-      : box
-  );
-
-  return {
-    ...next,
-    boxes,
-    fusions: next.fusions.filter((item) => item.id !== fusionId),
-    updatedAt: new Date().toISOString(),
-  };
-};
-
-const getBoxEndpointFiberIds = (network: Network, boxId: string): Set<string> => {
-  const endpoints = new Set<string>();
-  const box = network.boxes.find((item) => item.id === boxId);
-  if (!box) return endpoints;
-
-  (box.splitters || []).forEach((splitter) => {
-    splitter.inputFibers.forEach((fiber) => endpoints.add(fiber.id));
-    splitter.outputFibers.forEach((fiber) => endpoints.add(fiber.id));
-  });
-
-  network.cables
-    .filter((cable) => cable.startPoint === boxId || cable.endPoint === boxId)
-    .forEach((cable) => {
-      cable.fibers.forEach((fiber) => endpoints.add(fiber.id));
-    });
-
-  return endpoints;
-};
-
-const getLocalFusionForEndpoint = (network: Network, boxId: string, endpointId: string): Fusion | undefined => {
-  return network.fusions.find(
-    (fusion) =>
-      fusion.boxAId === boxId &&
-      fusion.boxBId === boxId &&
-      (fusion.fiberAId === endpointId || fusion.fiberBId === endpointId)
-  );
-};
-
-const getSplitterPortCount = (type: Splitter['type']) => {
-  const [inputRaw, outputRaw] = type.split('x');
-  const input = Number.parseInt(inputRaw, 10);
-  const output = Number.parseInt(outputRaw, 10);
-
-  return {
-    input: Number.isNaN(input) ? 1 : input,
-    output: Number.isNaN(output) ? 2 : output,
-  };
-};
 
 const NetworkContext = createContext<(NetworkState & NetworkActions) | null>(null);
 
@@ -1109,11 +852,18 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return null;
 
+    const fibersPerTube = Math.max(1, cableData.fibersPerTube || 12);
+    const looseTubeCount = Math.max(1, cableData.looseTubeCount || Math.ceil(cableData.fiberCount / fibersPerTube));
+    const maxCapacity = looseTubeCount * fibersPerTube;
+    const normalizedFiberCount = Math.min(Math.max(1, cableData.fiberCount), maxCapacity);
+
     const cable: PopCable = {
       ...cableData,
       id: generateId(),
-      fiberCount: Math.max(1, cableData.fiberCount),
-      fibers: generateFibers(Math.max(1, cableData.fiberCount)),
+      fiberCount: normalizedFiberCount,
+      looseTubeCount,
+      fibersPerTube,
+      fibers: generateFibers(normalizedFiberCount, 1, fibersPerTube),
     };
 
     updatePop(popId, { cables: [...pop.cables, cable] });
@@ -1130,7 +880,20 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     const ownerA = getPopEndpointOwner(pop, endpointAId);
     const ownerB = getPopEndpointOwner(pop, endpointBId);
     if (!ownerA || !ownerB) return null;
-    if (ownerA.kind === ownerB.kind && ownerA.id === ownerB.id) return null;
+    if (ownerA.kind === 'dio' && ownerB.kind === 'dio') return null;
+
+    const isEquipmentKind = (kind: typeof ownerA.kind) =>
+      kind === 'olt' || kind === 'switch' || kind === 'router';
+
+    // Regras de modelagem realista de rack:
+    // - cabo so termina em DIO
+    // - equipamento ativo (OLT/SW/RTR) so conecta ao DIO
+    if ((ownerA.kind === 'cable' && ownerB.kind !== 'dio') || (ownerB.kind === 'cable' && ownerA.kind !== 'dio')) {
+      return null;
+    }
+    if ((isEquipmentKind(ownerA.kind) && ownerB.kind !== 'dio') || (isEquipmentKind(ownerB.kind) && ownerA.kind !== 'dio')) {
+      return null;
+    }
 
     const isInactivePonEndpoint = (endpointId: string) => {
       if (!endpointId.startsWith('olt:')) return false;
@@ -1203,6 +966,42 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     );
     if (duplicate) return null;
 
+    const endpointKindById = (endpointId: string) => getPopEndpointOwner(pop, endpointId)?.kind;
+    const fusionsForEndpoint = (endpointId: string) =>
+      pop.fusions.filter((fusion) => fusion.endpointAId === endpointId || fusion.endpointBId === endpointId);
+
+    const canUseEndpoint = (endpointId: string, otherEndpointId: string) => {
+      const endpointKind = endpointKindById(endpointId);
+      const otherKind = endpointKindById(otherEndpointId);
+      if (!endpointKind || !otherKind) return false;
+
+      const linked = fusionsForEndpoint(endpointId);
+      if (endpointKind !== 'dio') {
+        // Cabo e portas de equipamento seguem 1:1
+        return linked.length === 0;
+      }
+
+      // Porta do DIO funciona como ponte: 1 lado cabo + 1 lado equipamento
+      if (linked.length >= 2) return false;
+      if (linked.length === 0) return true;
+
+      const existingOtherKinds = linked
+        .map((fusion) => {
+          const peerId = fusion.endpointAId === endpointId ? fusion.endpointBId : fusion.endpointAId;
+          return endpointKindById(peerId);
+        })
+        .filter((kind): kind is 'dio' | 'cable' | 'olt' | 'switch' | 'router' => Boolean(kind));
+
+      const hasCableSide = existingOtherKinds.some((kind) => kind === 'cable');
+      const hasEquipmentSide = existingOtherKinds.some((kind) => isEquipmentKind(kind));
+
+      if (otherKind === 'cable') return !hasCableSide;
+      if (isEquipmentKind(otherKind)) return !hasEquipmentSide;
+      return false;
+    };
+
+    if (!canUseEndpoint(endpointAId, endpointBId) || !canUseEndpoint(endpointBId, endpointAId)) return null;
+
     const fusion: PopFusion = {
       id: generateId(),
       endpointAId,
@@ -1213,7 +1012,55 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       dateCreated: new Date().toISOString(),
     };
 
-    updatePop(popId, { fusions: [...pop.fusions, fusion] });
+    const parseCableEndpoint = (endpointId: string) => {
+      if (!endpointId.startsWith('cable:')) return null;
+      const parts = endpointId.split(':');
+      const cableId = parts[1];
+      const marker = parts[2];
+      const fiberNumber = Number.parseInt(parts[3] || '', 10);
+      if (!cableId || marker !== 'f' || Number.isNaN(fiberNumber)) return null;
+      return { cableId, fiberNumber };
+    };
+
+    const endpointA = parseCableEndpoint(endpointAId);
+    const endpointB = parseCableEndpoint(endpointBId);
+    const updatedCables = (pop.cables || []).map((cable) => {
+      const endpointMatchesA = endpointA?.cableId === cable.id;
+      const endpointMatchesB = endpointB?.cableId === cable.id;
+      if (!endpointMatchesA && !endpointMatchesB) return cable;
+
+      return {
+        ...cable,
+        fibers: cable.fibers.map((fiber) => {
+          const matchesA = endpointMatchesA && fiber.number === endpointA!.fiberNumber;
+          const matchesB = endpointMatchesB && fiber.number === endpointB!.fiberNumber;
+          if (!matchesA && !matchesB) return fiber;
+
+          let connectedTo: string | undefined = fiber.connectedTo;
+          if (matchesA && endpointB) {
+            const targetCable = (pop.cables || []).find((item) => item.id === endpointB.cableId);
+            const targetFiber = targetCable?.fibers.find((item) => item.number === endpointB.fiberNumber);
+            connectedTo = targetFiber?.id;
+          }
+          if (matchesB && endpointA) {
+            const targetCable = (pop.cables || []).find((item) => item.id === endpointA.cableId);
+            const targetFiber = targetCable?.fibers.find((item) => item.number === endpointA.fiberNumber);
+            connectedTo = targetFiber?.id;
+          }
+
+          const nextStatus: Fiber['status'] = fiber.status === 'faulty' ? 'faulty' : 'active';
+
+          return {
+            ...fiber,
+            connectedTo,
+            fusionId: fusion.id,
+            status: nextStatus,
+          };
+        }),
+      };
+    });
+
+    updatePop(popId, { fusions: [...pop.fusions, fusion], cables: updatedCables });
     return fusion;
   }, [state.currentNetwork, updatePop]);
 
@@ -1222,7 +1069,26 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     if (!currentNetwork) return;
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return;
-    updatePop(popId, { fusions: pop.fusions.filter((fusion) => fusion.id !== fusionId) });
+    const updatedCables = (pop.cables || []).map((cable) => ({
+      ...cable,
+      fibers: cable.fibers.map((fiber) =>
+        fiber.fusionId === fusionId
+          ? (() => {
+              const nextStatus: Fiber['status'] = fiber.status === 'faulty' ? 'faulty' : 'inactive';
+              return {
+                ...fiber,
+                fusionId: undefined,
+                connectedTo: undefined,
+                status: nextStatus,
+              };
+            })()
+          : fiber
+      ),
+    }));
+    updatePop(popId, {
+      fusions: pop.fusions.filter((fusion) => fusion.id !== fusionId),
+      cables: updatedCables,
+    });
   }, [state.currentNetwork, updatePop]);
 
   const addReserve = useCallback((reserveData: Omit<ReservePoint, 'id'>) => {
@@ -1607,19 +1473,139 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         path.push(ownerLabel);
       }
 
-      if (!currentFiber.connectedTo || !currentFiber.fusionId) break;
+      if (currentFiber.connectedTo && currentFiber.fusionId) {
+        const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
+        if (fusion) attenuation += getFusionAttenuation(fusion);
+        currentFiberId = currentFiber.connectedTo;
+        hopCount += 1;
+        continue;
+      }
 
-      const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
-      if (fusion) attenuation += getFusionAttenuation(fusion);
-
-      currentFiberId = currentFiber.connectedTo;
+      const popHop = resolveNextFiberThroughPop(currentNetwork, currentFiberId);
+      if (!popHop) break;
+      attenuation += popHop.attenuation;
+      currentFiberId = popHop.nextFiberId;
       hopCount += 1;
+      if (path[path.length - 1] !== `POP ${popHop.popName}`) {
+        path.push(`POP ${popHop.popName}`);
+      }
     }
 
     return {
       connected: hopCount > 0,
       path,
       attenuation: Number(attenuation.toFixed(3)),
+    };
+  }, [state.currentNetwork]);
+
+  const getFiberRouteReport = useCallback((fiberId: string) => {
+    const currentNetwork = state.currentNetwork;
+    if (!currentNetwork) {
+      return {
+        connected: false,
+        path: [],
+        attenuation: 0,
+        fusionCount: 0,
+        cableCount: 0,
+        boxCount: 0,
+        splitterCount: 0,
+        popCount: 0,
+      };
+    }
+
+    const visited = new Set<string>();
+    const path: string[] = [];
+    let attenuation = 0;
+    let fusionCount = 0;
+    let currentFiberId: string | undefined = fiberId;
+    const cableIds = new Set<string>();
+    const boxIds = new Set<string>();
+    const splitterKeys = new Set<string>();
+    const popIds = new Set<string>();
+
+    const markOwners = (targetFiberId: string) => {
+      for (const cable of currentNetwork.cables) {
+        if (cable.fibers.some((fiber) => fiber.id === targetFiberId)) {
+          cableIds.add(cable.id);
+          return;
+        }
+      }
+      for (const box of currentNetwork.boxes) {
+        if (box.fibers.some((fiber) => fiber.id === targetFiberId)) {
+          boxIds.add(box.id);
+          return;
+        }
+        for (const splitter of box.splitters || []) {
+          if (
+            splitter.inputFibers.some((fiber) => fiber.id === targetFiberId) ||
+            splitter.outputFibers.some((fiber) => fiber.id === targetFiberId)
+          ) {
+            boxIds.add(box.id);
+            splitterKeys.add(`${box.id}:${splitter.id}`);
+            return;
+          }
+        }
+      }
+      for (const pop of currentNetwork.pops || []) {
+        for (const cable of pop.cables || []) {
+          if (cable.fibers.some((fiber) => fiber.id === targetFiberId)) {
+            popIds.add(pop.id);
+            return;
+          }
+        }
+      }
+    };
+
+    while (currentFiberId && !visited.has(currentFiberId)) {
+      visited.add(currentFiberId);
+      markOwners(currentFiberId);
+      const currentFiber = getFiberById(currentNetwork, currentFiberId);
+      if (!currentFiber) break;
+
+      const ownerLabel = getFiberOwnerLabel(currentNetwork, currentFiberId);
+      if (ownerLabel && path[path.length - 1] !== ownerLabel) {
+        path.push(ownerLabel);
+      }
+
+      if (currentFiber.connectedTo && currentFiber.fusionId) {
+        const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
+        if (fusion) attenuation += getFusionAttenuation(fusion);
+        fusionCount += 1;
+        currentFiberId = currentFiber.connectedTo;
+        continue;
+      }
+
+      const popHop = resolveNextFiberThroughPop(currentNetwork, currentFiberId);
+      if (!popHop) break;
+      attenuation += popHop.attenuation;
+      fusionCount += popHop.fusionCount;
+      popIds.add(popHop.popId);
+      currentFiberId = popHop.nextFiberId;
+      if (path[path.length - 1] !== `POP ${popHop.popName}`) {
+        path.push(`POP ${popHop.popName}`);
+      }
+    }
+
+    const signalAtPop = estimateSignalAtPopForFiber(currentNetwork, fiberId);
+
+    return {
+      connected: visited.size > 1,
+      path,
+      attenuation: Number(attenuation.toFixed(3)),
+      fusionCount,
+      cableCount: cableIds.size,
+      boxCount: boxIds.size,
+      splitterCount: splitterKeys.size,
+      popCount: popIds.size,
+      signalAtPop: signalAtPop
+        ? {
+            popName: signalAtPop.popName,
+            oltEndpointId: signalAtPop.oltEndpointId,
+            txPowerDbm: signalAtPop.txPowerDbm,
+            popLossDb: signalAtPop.popLossDb,
+            estimatedRxDbm: signalAtPop.estimatedRxDbm,
+          }
+        : undefined,
     };
   }, [state.currentNetwork]);
 
@@ -1690,7 +1676,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
                 })),
             })),
           })),
-          switches: (pop.switches || []).map((sw) => ({
+        switches: (pop.switches || []).map((sw) => ({
             ...sw,
             ports: (sw.ports || []).map((port, portIdx) => ({
               ...port,
@@ -1706,8 +1692,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
                 ? (port as PopSwitchPort & { active?: boolean }).active!
                 : true,
             })),
-          })),
-          routers: (pop.routers || []).map((router) => ({
+        })),
+        routers: (pop.routers || []).map((router) => ({
             ...router,
             interfaces: (router.interfaces || []).map((iface, ifaceIdx) => ({
               ...iface,
@@ -1715,9 +1701,30 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
               active: typeof (iface as PopRouterInterface & { active?: boolean }).active === 'boolean'
                 ? (iface as PopRouterInterface & { active?: boolean }).active!
                 : true,
-            })),
           })),
         })),
+        cables: (pop.cables || []).map((cable) => {
+          const fibersPerTube = Math.max(1, cable.fibersPerTube || 12);
+          const looseTubeCount = Math.max(
+            1,
+            cable.looseTubeCount || Math.ceil(cable.fiberCount / fibersPerTube)
+          );
+          const maxCapacity = looseTubeCount * fibersPerTube;
+          const fiberCount = Math.min(Math.max(1, cable.fiberCount), maxCapacity);
+          const fibers = (cable.fibers || []).map((fiber, index) => ({
+            ...fiber,
+            tubeNumber: (fiber as Fiber).tubeNumber || Math.floor(index / fibersPerTube) + 1,
+          }));
+
+          return {
+            ...cable,
+            fiberCount,
+            looseTubeCount,
+            fibersPerTube,
+            fibers,
+          };
+        }),
+      })),
         reserves: networkRaw.reserves || [],
         cables: (networkRaw.cables || []).map((cable) => {
           const fibersPerTube = Math.max(1, (cable as Partial<Cable>).fibersPerTube || 12);
@@ -1819,6 +1826,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     setActiveFusion,
     getFiberPath,
     getFiberContinuity,
+    getFiberRouteReport,
     generateFibers,
     importNetwork,
     exportNetwork,

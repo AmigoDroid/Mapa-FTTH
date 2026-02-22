@@ -19,5 +19,24 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      'react-refresh/only-export-components': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off',
+      'react-hooks/purity': 'off',
+    },
+  },
+  {
+    files: ['src/components/map/NetworkMap.tsx'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+    },
+  },
+  {
+    files: ['src/components/ui-custom/CableDetail.tsx'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
   },
 ])

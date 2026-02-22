@@ -802,6 +802,8 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   };
 
   const handleTestContinuity = (fiber: Fiber) => {
+    window.dispatchEvent(new CustomEvent('ftth:trace-fiber', { detail: { fiberId: fiber.id } }));
+
     const continuity = getFiberContinuity(fiber.id);
     const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
     const endPoint = continuity.path.length > 0 ? continuity.path[continuity.path.length - 1] : 'Sem continuidade';

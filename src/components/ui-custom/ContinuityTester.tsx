@@ -5,18 +5,21 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
-import { 
-  Activity, 
-  Play, 
+import {
+  Activity,
+  Play,
   RotateCcw,
   CheckCircle2,
   XCircle,
   Zap,
   Route,
   ArrowRight,
+  Download,
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { FIBER_COLORS } from '@/types/ftth';
-import type { Fiber } from '@/types/ftth';
+import type { Box, Cable } from '@/types/ftth';
 
 interface ContinuityTesterProps {
   open: boolean;
@@ -31,62 +34,81 @@ interface TestResult {
   attenuation?: number;
   distance?: number;
   path?: string[];
+  fusionCount?: number;
+  cableCount?: number;
+  boxCount?: number;
+  splitterCount?: number;
+  popCount?: number;
+  signalAtPop?: {
+    popName: string;
+    oltEndpointId: string;
+    txPowerDbm: number;
+    popLossDb: number;
+    estimatedRxDbm: number;
+  };
   timestamp?: string;
 }
 
+type ContinuitySource =
+  | { box: Box; cable?: undefined }
+  | { box?: undefined; cable: Cable };
+
 export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) {
-  const { currentNetwork, testContinuity, getFiberContinuity } = useNetworkStore();
-  const [selectedSource, setSelectedSource] = useState<{box?: any; cable?: any} | null>(null);
+  const { currentNetwork, testContinuity, getFiberRouteReport } = useNetworkStore();
+  const [selectedSource, setSelectedSource] = useState<ContinuitySource | null>(null);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [isTesting, setIsTesting] = useState(false);
   const [currentTestIndex, setCurrentTestIndex] = useState(0);
   const [showVisualization, setShowVisualization] = useState(false);
   const [selectedResult, setSelectedResult] = useState<TestResult | null>(null);
 
+  const highlightFiberOnMap = (fiberId: string) => {
+    window.dispatchEvent(new CustomEvent('ftth:trace-fiber', { detail: { fiberId } }));
+  };
+
+  const clearFiberHighlightOnMap = () => {
+    window.dispatchEvent(new CustomEvent('ftth:trace-clear'));
+  };
+
   const runTest = async () => {
     if (!selectedSource) return;
-    
+
     setIsTesting(true);
     setTestResults([]);
     setCurrentTestIndex(0);
 
-    const fibers = selectedSource.cable 
-      ? selectedSource.cable.fibers 
+    const fibers = selectedSource.cable
+      ? selectedSource.cable.fibers
       : selectedSource.box?.fibers || [];
 
     for (let i = 0; i < fibers.length; i++) {
       setCurrentTestIndex(i);
       const fiber = fibers[i];
-      
-      // Simular delay de teste
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!fiber) continue;
 
-      const continuity = selectedSource.box
-        ? getFiberContinuity(fiber.id)
-        : {
-            connected: selectedSource.cable?.status === 'active',
-            path: generatePath(fiber),
-            attenuation:
-              selectedSource.cable?.length != null
-                ? Number(((selectedSource.cable.length / 1000) * 0.25 + 0.4).toFixed(3))
-                : 0,
-          };
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const passed = continuity.connected;
+      const routeReport = getFiberRouteReport(fiber.id);
+      const passed = routeReport.connected;
       const result: TestResult = {
         fiberId: fiber.id,
         fiberNumber: fiber.number,
         color: fiber.color,
         result: passed ? 'pass' : 'fail',
-        attenuation: passed ? continuity.attenuation : undefined,
+        attenuation: passed ? routeReport.attenuation : undefined,
         distance: selectedSource.cable?.length || undefined,
-        path: continuity.path,
+        path: routeReport.path,
+        fusionCount: routeReport.fusionCount,
+        cableCount: routeReport.cableCount,
+        boxCount: routeReport.boxCount,
+        splitterCount: routeReport.splitterCount,
+        popCount: routeReport.popCount,
+        signalAtPop: routeReport.signalAtPop,
         timestamp: new Date().toISOString(),
       };
 
-      setTestResults(prev => [...prev, result]);
-      
-      // Registrar teste na store
+      setTestResults((prev) => [...prev, result]);
+
       testContinuity({
         cableId: selectedSource.cable?.id || '',
         fiberNumber: fiber.number,
@@ -102,51 +124,171 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
     setIsTesting(false);
   };
 
-  const generatePath = (fiber: Fiber): string[] => {
-    const path: string[] = [];
-    
-    if (selectedSource?.box) {
-      path.push(selectedSource.box.name);
-      
-      // Verificar se há fusão
-      const boxFiber = selectedSource.box.fibers.find((f: any) => f.id === fiber.id);
-      if (boxFiber?.fusionId) {
-        const fusion = selectedSource.box.fusions.find((f: any) => f.id === boxFiber.fusionId);
-        if (fusion) {
-          const otherBoxId = fusion.boxAId === selectedSource.box.id ? fusion.boxBId : fusion.boxAId;
-          const otherBox = currentNetwork?.boxes.find((b: any) => b.id === otherBoxId);
-          if (otherBox) {
-            path.push(`→ ${otherBox.name}`);
-          }
-        }
-      }
-    } else if (selectedSource?.cable) {
-      const startBox = currentNetwork?.boxes.find((b: any) => b.id === selectedSource.cable?.startPoint);
-      const endBox = currentNetwork?.boxes.find((b: any) => b.id === selectedSource.cable?.endPoint);
-      
-      if (startBox) path.push(startBox.name);
-      path.push(`→ Cabo ${selectedSource.cable.name}`);
-      if (endBox) path.push(`→ ${endBox.name}`);
-    }
-    
-    return path;
-  };
-
   const resetTest = () => {
     setTestResults([]);
     setCurrentTestIndex(0);
     setIsTesting(false);
     setSelectedResult(null);
+    clearFiberHighlightOnMap();
   };
 
   const getPassRate = () => {
     if (testResults.length === 0) return 0;
-    const passed = testResults.filter(r => r.result === 'pass').length;
+    const passed = testResults.filter((r) => r.result === 'pass').length;
     return Math.round((passed / testResults.length) * 100);
   };
 
+  const exportCableDiagnosticsPdf = () => {
+    if (!selectedSource?.cable || !cableDiagnostics) return;
+
+    const generatedAt = new Date().toLocaleString('pt-BR');
+    const passCount = testResults.filter((item) => item.result === 'pass').length;
+    const failCount = testResults.filter((item) => item.result === 'fail').length;
+
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const safeName = cableDiagnostics.name.replace(/[\\/:*?"<>|]/g, '-');
+    const title = `Relatorio Tecnico de Cabo - ${cableDiagnostics.name}`;
+
+    doc.setFontSize(14);
+    doc.text(title, 10, 12);
+    doc.setFontSize(9);
+    doc.text(`Gerado em: ${generatedAt}`, 10, 17);
+    doc.text(`ID: ${cableDiagnostics.id}`, 10, 21);
+    doc.text(`Status: ${cableDiagnostics.status}`, 10, 25);
+    doc.text(`Origem: ${cableDiagnostics.startPointLabel}`, 10, 29);
+    doc.text(`Destino: ${cableDiagnostics.endPointLabel}`, 10, 33);
+
+    autoTable(doc, {
+      startY: 38,
+      head: [['Parametros de Engenharia', 'Valor']],
+      body: [
+        ['Comprimento', `${cableDiagnostics.lengthMeters.toFixed(0)} m (${cableDiagnostics.lengthKm.toFixed(3)} km)`],
+        ['Modelo / Tipo', `${cableDiagnostics.model} / ${cableDiagnostics.type}`],
+        ['Perda fibra', `${cableDiagnostics.fiberLossDb.toFixed(3)} dB`],
+        ['Perda conectores', `${cableDiagnostics.connectorLossDb.toFixed(3)} dB`],
+        ['Perda total estimada', `${cableDiagnostics.estimatedTotalCableLossDb.toFixed(3)} dB`],
+        ['Estrutura', `${cableDiagnostics.looseTubeCount} tubos x ${cableDiagnostics.fibersPerTube} fibras/tubo`],
+      ],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [31, 41, 55] },
+      theme: 'striped',
+    });
+
+    autoTable(doc, {
+      startY: (doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY
+        ? ((doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable!.finalY! + 4)
+        : 90,
+      head: [['Inventario de Fibras', 'Valor']],
+      body: [
+        ['Total', `${cableDiagnostics.fiberCount}`],
+        ['Ativas', `${cableDiagnostics.activeFibers}`],
+        ['Inativas', `${cableDiagnostics.inactiveFibers}`],
+        ['Reservadas', `${cableDiagnostics.reservedFibers}`],
+        ['Falha', `${cableDiagnostics.faultyFibers}`],
+        ['Uso', `${cableDiagnostics.usedPercent}%`],
+      ],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [31, 41, 55] },
+      theme: 'striped',
+    });
+
+    autoTable(doc, {
+      startY: (doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY
+        ? ((doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable!.finalY! + 4)
+        : 130,
+      head: [['Resumo de Testes', 'Valor']],
+      body: [
+        ['Taxa de aprovacao', `${getPassRate()}%`],
+        ['Fibras OK', `${passCount}`],
+        ['Falhas', `${failCount}`],
+      ],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [31, 41, 55] },
+      theme: 'striped',
+    });
+
+    autoTable(doc, {
+      startY: (doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY
+        ? ((doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable!.finalY! + 4)
+        : 160,
+      head: [['Fibra', 'Cor', 'Resultado', 'Atenuacao (dB)', 'Fusoes', 'Splitters', 'Caixas', 'POPs']],
+      body: testResults.map((item) => [
+        `${item.fiberNumber}`,
+        item.color.name,
+        item.result === 'pass' ? 'APROVADO' : 'REPROVADO',
+        typeof item.attenuation === 'number' ? item.attenuation.toFixed(3) : '-',
+        `${item.fusionCount ?? 0}`,
+        `${item.splitterCount ?? 0}`,
+        `${item.boxCount ?? 0}`,
+        `${item.popCount ?? 0}`,
+      ]),
+      styles: { fontSize: 7.5 },
+      headStyles: { fillColor: [17, 94, 89] },
+      theme: 'grid',
+    });
+
+    doc.save(`relatorio-cabo-${safeName}.pdf`);
+  };
+
+  const cableDiagnostics = (() => {
+    if (!selectedSource?.cable) return null;
+    const cable = selectedSource.cable;
+
+    const resolveEndpointLabel = (endpointId: string) => {
+      if (!endpointId) return 'Nao definido';
+      const box = currentNetwork?.boxes.find((item) => item.id === endpointId);
+      if (box) return `${box.name} (Caixa ${box.type})`;
+      const pop = (currentNetwork?.pops || []).find((item) => item.id === endpointId);
+      if (pop) return `${pop.name} (POP)`;
+      return endpointId;
+    };
+
+    const lengthMeters = Math.max(0, cable.length || 0);
+    const lengthKm = lengthMeters / 1000;
+    const fiberLossDb = Number((lengthKm * 0.25).toFixed(3));
+    const connectorLossDb = 0.4;
+    const estimatedTotalCableLossDb = Number((fiberLossDb + connectorLossDb).toFixed(3));
+
+    const activeFibers = cable.fibers.filter((fiber) => fiber.status === 'active').length;
+    const inactiveFibers = cable.fibers.filter((fiber) => fiber.status === 'inactive').length;
+    const reservedFibers = cable.fibers.filter((fiber) => fiber.status === 'reserved').length;
+    const faultyFibers = cable.fibers.filter((fiber) => fiber.status === 'faulty').length;
+    const usedPercent = cable.fibers.length > 0 ? Number(((activeFibers / cable.fibers.length) * 100).toFixed(1)) : 0;
+
+    return {
+      id: cable.id,
+      name: cable.name,
+      type: cable.type,
+      model: cable.model || 'N/A',
+      status: cable.status,
+      lengthMeters,
+      lengthKm,
+      fiberLossDb,
+      connectorLossDb,
+      estimatedTotalCableLossDb,
+      fiberCount: cable.fiberCount,
+      looseTubeCount: cable.looseTubeCount,
+      fibersPerTube: cable.fibersPerTube,
+      activeFibers,
+      inactiveFibers,
+      reservedFibers,
+      faultyFibers,
+      usedPercent,
+      attachments: (cable.attachments || []).length,
+      routePoints: (cable.path || []).length,
+      startPointLabel: resolveEndpointLabel(cable.startPoint),
+      endPointLabel: resolveEndpointLabel(cable.endPoint),
+    };
+  })();
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        onOpenChange(nextOpen);
+        if (!nextOpen) clearFiberHighlightOnMap();
+      }}
+    >
       <DialogContent className="max-w-4xl max-h-[90vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -156,7 +298,6 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Seleção de fonte */}
           {!selectedSource ? (
             <div className="grid grid-cols-2 gap-4">
               <Card>
@@ -164,7 +305,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                   <h4 className="font-semibold mb-3">Selecionar Caixa</h4>
                   <ScrollArea className="h-48">
                     <div className="space-y-2">
-                      {currentNetwork?.boxes.map((box: any) => (
+                      {currentNetwork?.boxes.map((box) => (
                         <Button
                           key={box.id}
                           variant="outline"
@@ -185,7 +326,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                   <h4 className="font-semibold mb-3">Selecionar Cabo</h4>
                   <ScrollArea className="h-48">
                     <div className="space-y-2">
-                      {currentNetwork?.cables.map((cable: any) => (
+                      {currentNetwork?.cables.map((cable) => (
                         <Button
                           key={cable.id}
                           variant="outline"
@@ -203,7 +344,6 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Header com info da fonte */}
               <div className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
                 <div className="flex items-center gap-3">
                   {selectedSource.box ? (
@@ -224,12 +364,19 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                     </>
                   )}
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setSelectedSource(null)}>
-                  Trocar
-                </Button>
+                <div className="flex items-center gap-2">
+                  {selectedSource.cable && (
+                    <Button variant="outline" size="sm" onClick={exportCableDiagnosticsPdf}>
+                      <Download className="w-4 h-4 mr-1" />
+                      Exportar PDF
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => setSelectedSource(null)}>
+                    Trocar
+                  </Button>
+                </div>
               </div>
 
-              {/* Controles de teste */}
               <div className="flex gap-2">
                 {!isTesting && testResults.length === 0 && (
                   <Button onClick={runTest} className="flex-1">
@@ -251,11 +398,88 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                 )}
               </div>
 
-              {/* Progresso */}
+              {cableDiagnostics && (
+                <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
+                  <p className="text-sm font-semibold">Diagnostico Tecnico do Cabo</p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Comprimento</p>
+                      <p className="font-semibold">{cableDiagnostics.lengthMeters.toFixed(0)} m</p>
+                      <p className="text-gray-500">{cableDiagnostics.lengthKm.toFixed(3)} km</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Perda fibra</p>
+                      <p className="font-semibold">{cableDiagnostics.fiberLossDb.toFixed(3)} dB</p>
+                      <p className="text-gray-500">0.25 dB/km</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Perda conectores</p>
+                      <p className="font-semibold">{cableDiagnostics.connectorLossDb.toFixed(3)} dB</p>
+                      <p className="text-gray-500">estimada</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Perda total estimada</p>
+                      <p className="font-semibold">{cableDiagnostics.estimatedTotalCableLossDb.toFixed(3)} dB</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Modelo / Tipo</p>
+                      <p className="font-semibold">{cableDiagnostics.model}</p>
+                      <p className="text-gray-500 uppercase">{cableDiagnostics.type}</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Estrutura</p>
+                      <p className="font-semibold">{cableDiagnostics.looseTubeCount} tubos</p>
+                      <p className="text-gray-500">{cableDiagnostics.fibersPerTube} fibras/tubo</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Fibras</p>
+                      <p className="font-semibold">{cableDiagnostics.fiberCount} total</p>
+                      <p className="text-gray-500">{cableDiagnostics.usedPercent}% ativas</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Status</p>
+                      <p className="font-semibold">{cableDiagnostics.status}</p>
+                      <p className="text-gray-500">{cableDiagnostics.routePoints} pontos no tracado</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Fibras ativas</p>
+                      <p className="font-semibold">{cableDiagnostics.activeFibers}</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Fibras inativas</p>
+                      <p className="font-semibold">{cableDiagnostics.inactiveFibers}</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Fibras reservadas</p>
+                      <p className="font-semibold">{cableDiagnostics.reservedFibers}</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Fibras com falha</p>
+                      <p className="font-semibold">{cableDiagnostics.faultyFibers}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Origem</p>
+                      <p className="font-medium">{cableDiagnostics.startPointLabel}</p>
+                    </div>
+                    <div className="rounded border bg-white p-2">
+                      <p className="text-gray-500">Destino</p>
+                      <p className="font-medium">{cableDiagnostics.endPointLabel}</p>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    ID: {cableDiagnostics.id} | anexos no tracado: {cableDiagnostics.attachments}
+                  </p>
+                </div>
+              )}
+
               {isTesting && (
                 <div className="space-y-2">
-                  <Progress 
-                    value={(currentTestIndex / ((selectedSource.box?.fibers.length || selectedSource.cable?.fibers.length) || 1)) * 100} 
+                  <Progress
+                    value={(currentTestIndex / ((selectedSource.box?.fibers.length || selectedSource.cable?.fibers.length) || 1)) * 100}
                   />
                   <p className="text-xs text-center text-gray-500">
                     Testando fibra {currentTestIndex + 1} de {selectedSource.box?.fibers.length || selectedSource.cable?.fibers.length}
@@ -263,10 +487,8 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                 </div>
               )}
 
-              {/* Resultados */}
               {testResults.length > 0 && (
                 <div className="space-y-4">
-                  {/* Resumo */}
                   <div className="grid grid-cols-3 gap-4">
                     <Card>
                       <CardContent className="p-3 text-center">
@@ -277,7 +499,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                     <Card>
                       <CardContent className="p-3 text-center">
                         <p className="text-2xl font-bold text-green-600">
-                          {testResults.filter(r => r.result === 'pass').length}
+                          {testResults.filter((r) => r.result === 'pass').length}
                         </p>
                         <p className="text-xs text-gray-500">Fibras OK</p>
                       </CardContent>
@@ -285,14 +507,13 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                     <Card>
                       <CardContent className="p-3 text-center">
                         <p className="text-2xl font-bold text-red-600">
-                          {testResults.filter(r => r.result === 'fail').length}
+                          {testResults.filter((r) => r.result === 'fail').length}
                         </p>
                         <p className="text-xs text-gray-500">Falhas</p>
                       </CardContent>
                     </Card>
                   </div>
 
-                  {/* Lista de resultados */}
                   <ScrollArea className="h-64">
                     <div className="grid grid-cols-6 gap-2">
                       {testResults.map((result) => (
@@ -306,10 +527,11 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                           onClick={() => {
                             setSelectedResult(result);
                             setShowVisualization(true);
+                            highlightFiberOnMap(result.fiberId);
                           }}
                         >
                           <div className="flex items-center justify-center gap-1 mb-1">
-                            <div 
+                            <div
                               className="w-3 h-3 rounded-full border"
                               style={{ backgroundColor: result.color.hex }}
                             />
@@ -322,7 +544,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                               <XCircle className="w-4 h-4 text-red-500" />
                             )}
                           </div>
-                          {result.attenuation && (
+                          {result.attenuation !== undefined && (
                             <p className="text-[10px] text-center text-gray-500 mt-1">
                               {result.attenuation.toFixed(2)} dB
                             </p>
@@ -337,7 +559,6 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
           )}
         </div>
 
-        {/* Visualização do caminho */}
         {showVisualization && selectedResult && (
           <Dialog open={showVisualization} onOpenChange={setShowVisualization}>
             <DialogContent className="max-w-lg">
@@ -346,7 +567,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
               </DialogHeader>
               <div className="space-y-4">
                 <div className="flex items-center gap-3">
-                  <div 
+                  <div
                     className="w-6 h-6 rounded-full border"
                     style={{ backgroundColor: selectedResult.color.hex }}
                   />
@@ -374,16 +595,50 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                   </div>
                 </div>
 
-                {selectedResult.attenuation && (
+                {selectedResult.attenuation !== undefined && (
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-gray-50 p-3 rounded">
-                      <p className="text-xs text-gray-500">Atenuação</p>
+                      <p className="text-xs text-gray-500">Atenuacao</p>
                       <p className="text-lg font-semibold">{selectedResult.attenuation.toFixed(2)} dB</p>
                     </div>
                     <div className="bg-gray-50 p-3 rounded">
-                      <p className="text-xs text-gray-500">Distância</p>
+                      <p className="text-xs text-gray-500">Distancia</p>
                       <p className="text-lg font-semibold">{selectedResult.distance?.toFixed(0)} m</p>
                     </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <div className="bg-gray-50 p-2 rounded">
+                    <p className="text-[11px] text-gray-500">Fusoes</p>
+                    <p className="font-semibold">{selectedResult.fusionCount ?? 0}</p>
+                  </div>
+                  <div className="bg-gray-50 p-2 rounded">
+                    <p className="text-[11px] text-gray-500">Splitters</p>
+                    <p className="font-semibold">{selectedResult.splitterCount ?? 0}</p>
+                  </div>
+                  <div className="bg-gray-50 p-2 rounded">
+                    <p className="text-[11px] text-gray-500">Caixas</p>
+                    <p className="font-semibold">{selectedResult.boxCount ?? 0}</p>
+                  </div>
+                  <div className="bg-gray-50 p-2 rounded">
+                    <p className="text-[11px] text-gray-500">Cabos</p>
+                    <p className="font-semibold">{selectedResult.cableCount ?? 0}</p>
+                  </div>
+                  <div className="bg-gray-50 p-2 rounded">
+                    <p className="text-[11px] text-gray-500">POPs</p>
+                    <p className="font-semibold">{selectedResult.popCount ?? 0}</p>
+                  </div>
+                </div>
+
+                {selectedResult.signalAtPop && (
+                  <div className="rounded-lg border bg-blue-50 p-3">
+                    <p className="text-sm font-medium text-blue-900">Sinal via POP/OLT</p>
+                    <p className="text-xs text-blue-800">POP: {selectedResult.signalAtPop.popName}</p>
+                    <p className="text-xs text-blue-800">Porta OLT: {selectedResult.signalAtPop.oltEndpointId}</p>
+                    <p className="text-xs text-blue-800">TX: {selectedResult.signalAtPop.txPowerDbm.toFixed(2)} dBm</p>
+                    <p className="text-xs text-blue-800">Perda POP: {selectedResult.signalAtPop.popLossDb.toFixed(3)} dB</p>
+                    <p className="text-xs font-semibold text-blue-900">RX estimado: {selectedResult.signalAtPop.estimatedRxDbm.toFixed(3)} dBm</p>
                   </div>
                 )}
 
