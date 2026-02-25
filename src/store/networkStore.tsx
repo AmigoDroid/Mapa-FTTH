@@ -13,7 +13,6 @@ import type {
   PopCable,
   PopFusion,
   PopSwitch,
-  PopSwitchPort,
   PopRouter,
   PopRouterInterface,
   OltSlot,
@@ -38,11 +37,18 @@ import {
   getFiberOwnerLabel,
   getFusionAttenuation,
   getLocalFusionForEndpoint,
-  getPopEndpointOwner,
   estimateSignalAtPopForFiber,
   resolveNextFiberThroughPop,
   getSplitterPortCount,
 } from '@/store/networkUtils';
+import { normalizeCableGeometry } from '@/store/cableUtils';
+import {
+  applyPopFusionToCables,
+  buildPopFusion,
+  canConnectPopEndpoints,
+  clearPopFusionFromCables,
+} from '@/store/popEndpointUtils';
+import { normalizeImportedNetwork } from '@/store/networkImportUtils';
 
 interface NetworkState {
   currentNetwork: Network | null;
@@ -140,6 +146,150 @@ interface NetworkActions {
 }
 
 const NetworkContext = createContext<(NetworkState & NetworkActions) | null>(null);
+
+type PopMirrorRole = 'incoming' | 'outgoing';
+
+const mapCableToPopCableType = (type: Cable['type']): PopCable['type'] => {
+  if (type === 'drop') return 'patchcord';
+  if (type === 'backbone') return 'backbone';
+  return 'backbone';
+};
+
+const mapCableToPopCableStatus = (status: Cable['status']): PopCable['status'] => {
+  if (status === 'inactive') return 'inactive';
+  if (status === 'maintenance') return 'maintenance';
+  return 'active';
+};
+
+const getPopMirrorRoleLabel = (role: PopMirrorRole) =>
+  role === 'incoming' ? 'ENTRADA MAPA' : 'SAIDA MAPA';
+
+const resolvePopMirrorRole = (cable: Cable, popId: string): PopMirrorRole | null => {
+  if (cable.startPoint === popId) return 'outgoing';
+  if (cable.endPoint === popId) return 'incoming';
+  return null;
+};
+
+const isFusionBoundToPopCableIds = (fusion: PopFusion, cableIds: Set<string>) => {
+  for (const cableId of cableIds) {
+    const prefix = `cable:${cableId}:`;
+    if (fusion.endpointAId.startsWith(prefix) || fusion.endpointBId.startsWith(prefix)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const buildPopMirrorCable = (cable: Cable, role: PopMirrorRole): PopCable => {
+  const geometry = normalizeCableGeometry(cable.fiberCount, cable.looseTubeCount, cable.fibersPerTube);
+  return {
+    id: generateId(),
+    name: `${cable.name} (${getPopMirrorRoleLabel(role)})`,
+    type: mapCableToPopCableType(cable.type),
+    fiberCount: geometry.fiberCount,
+    looseTubeCount: geometry.looseTubeCount,
+    fibersPerTube: geometry.fibersPerTube,
+    fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
+    status: mapCableToPopCableStatus(cable.status),
+    linkedNetworkCableId: cable.id,
+    mapEndpointRole: role,
+  };
+};
+
+const removePopMirrorCablesForNetworkCable = (network: Network, cableId: string): Pop[] =>
+  (network.pops || []).map((pop) => {
+    const linked = (pop.cables || []).filter((item) => item.linkedNetworkCableId === cableId);
+    if (linked.length === 0) return pop;
+
+    const linkedIds = new Set(linked.map((item) => item.id));
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    linkedIds.forEach((linkedId) => {
+      delete nextFusionLayout[`cable:${linkedId}`];
+    });
+
+    return {
+      ...pop,
+      cables: (pop.cables || []).filter((item) => item.linkedNetworkCableId !== cableId),
+      fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, linkedIds)),
+      fusionLayout: nextFusionLayout,
+    };
+  });
+
+const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop[] =>
+  (network.pops || []).map((pop) => {
+    const role = resolvePopMirrorRole(cable, pop.id);
+    const popCables = pop.cables || [];
+    const linked = popCables.filter((item) => item.linkedNetworkCableId === cable.id);
+
+    if (!role) {
+      if (linked.length === 0) return pop;
+      const linkedIds = new Set(linked.map((item) => item.id));
+      const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+      linkedIds.forEach((linkedId) => {
+        delete nextFusionLayout[`cable:${linkedId}`];
+      });
+      return {
+        ...pop,
+        cables: popCables.filter((item) => item.linkedNetworkCableId !== cable.id),
+        fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, linkedIds)),
+        fusionLayout: nextFusionLayout,
+      };
+    }
+
+    const geometry = normalizeCableGeometry(cable.fiberCount, cable.looseTubeCount, cable.fibersPerTube);
+    const primary = linked[0];
+    const duplicateIds = new Set(linked.slice(1).map((item) => item.id));
+    const nextFusionLayout = { ...(pop.fusionLayout || {}) };
+    duplicateIds.forEach((linkedId) => {
+      delete nextFusionLayout[`cable:${linkedId}`];
+    });
+
+    if (!primary) {
+      return {
+        ...pop,
+        cables: [...popCables, buildPopMirrorCable(cable, role)],
+      };
+    }
+
+    const geometryChanged =
+      primary.fiberCount !== geometry.fiberCount ||
+      (primary.looseTubeCount || 1) !== geometry.looseTubeCount ||
+      (primary.fibersPerTube || 12) !== geometry.fibersPerTube;
+
+    const removedIds = new Set<string>(duplicateIds);
+    if (geometryChanged) {
+      removedIds.add(primary.id);
+      delete nextFusionLayout[`cable:${primary.id}`];
+    }
+
+    const nextPrimary: PopCable = {
+      ...primary,
+      name: `${cable.name} (${getPopMirrorRoleLabel(role)})`,
+      type: mapCableToPopCableType(cable.type),
+      fiberCount: geometry.fiberCount,
+      looseTubeCount: geometry.looseTubeCount,
+      fibersPerTube: geometry.fibersPerTube,
+      fibers: geometryChanged
+        ? generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube)
+        : primary.fibers,
+      status: mapCableToPopCableStatus(cable.status),
+      linkedNetworkCableId: cable.id,
+      mapEndpointRole: role,
+    };
+
+    return {
+      ...pop,
+      cables: popCables
+        .map((item) => {
+          if (item.id === primary.id) return nextPrimary;
+          if (item.linkedNetworkCableId === cable.id) return null;
+          return item;
+        })
+        .filter((item): item is PopCable => Boolean(item)),
+      fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, removedIds)),
+      fusionLayout: nextFusionLayout,
+    };
+  });
 
 export function NetworkProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<NetworkState>({
@@ -333,18 +483,19 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCable = useCallback((cableData: Omit<Cable, 'id' | 'fibers'>) => {
-    const fibersPerTube = Math.max(1, cableData.fibersPerTube || 12);
-    const looseTubeCount = Math.max(1, cableData.looseTubeCount || Math.ceil(cableData.fiberCount / fibersPerTube));
-    const maxCapacity = looseTubeCount * fibersPerTube;
-    const normalizedFiberCount = Math.min(Math.max(1, cableData.fiberCount), maxCapacity);
+    const geometry = normalizeCableGeometry(
+      cableData.fiberCount,
+      cableData.looseTubeCount,
+      cableData.fibersPerTube
+    );
     const cable: Cable = {
       ...cableData,
-      fiberCount: normalizedFiberCount,
-      fibersPerTube,
-      looseTubeCount,
+      fiberCount: geometry.fiberCount,
+      fibersPerTube: geometry.fibersPerTube,
+      looseTubeCount: geometry.looseTubeCount,
       model: cableData.model || 'AS-80',
       id: generateId(),
-      fibers: generateFibers(normalizedFiberCount, 1, fibersPerTube),
+      fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
     };
 
     setState(prev => {
@@ -360,6 +511,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         }
         return box;
       });
+      const updatedPops = syncPopMirrorCablesForNetworkCable(prev.currentNetwork, cable);
 
       return {
         ...prev,
@@ -367,6 +519,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
           ...prev.currentNetwork,
           cables: updatedCables,
           boxes: updatedBoxes,
+          pops: updatedPops,
           updatedAt: new Date().toISOString(),
         },
       };
@@ -400,15 +553,21 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
             return { ...box, outputCables: nextOutput, inputCables: nextInput };
           })
         : prev.currentNetwork.boxes;
+      const updatedCables = prev.currentNetwork.cables.map((cable) =>
+        cable.id === cableId ? { ...cable, ...updates } : cable
+      );
+      const updatedPops = syncPopMirrorCablesForNetworkCable(
+        { ...prev.currentNetwork, cables: updatedCables, boxes: updatedBoxes },
+        nextCable
+      );
 
       return {
         ...prev,
         currentNetwork: {
           ...prev.currentNetwork,
-          cables: prev.currentNetwork.cables.map(cable =>
-            cable.id === cableId ? { ...cable, ...updates } : cable
-          ),
+          cables: updatedCables,
           boxes: updatedBoxes,
+          pops: updatedPops,
           updatedAt: new Date().toISOString(),
         },
       };
@@ -436,6 +595,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
           inputCables: box.inputCables.filter(id => id !== cableId),
           outputCables: box.outputCables.filter(id => id !== cableId),
         })),
+        pops: removePopMirrorCablesForNetworkCable(prev.currentNetwork, cableId),
       };
 
       const cleanedNetwork = affectedFusions.reduce(
@@ -852,18 +1012,19 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return null;
 
-    const fibersPerTube = Math.max(1, cableData.fibersPerTube || 12);
-    const looseTubeCount = Math.max(1, cableData.looseTubeCount || Math.ceil(cableData.fiberCount / fibersPerTube));
-    const maxCapacity = looseTubeCount * fibersPerTube;
-    const normalizedFiberCount = Math.min(Math.max(1, cableData.fiberCount), maxCapacity);
+    const geometry = normalizeCableGeometry(
+      cableData.fiberCount,
+      cableData.looseTubeCount,
+      cableData.fibersPerTube
+    );
 
     const cable: PopCable = {
       ...cableData,
       id: generateId(),
-      fiberCount: normalizedFiberCount,
-      looseTubeCount,
-      fibersPerTube,
-      fibers: generateFibers(normalizedFiberCount, 1, fibersPerTube),
+      fiberCount: geometry.fiberCount,
+      looseTubeCount: geometry.looseTubeCount,
+      fibersPerTube: geometry.fibersPerTube,
+      fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
     };
 
     updatePop(popId, { cables: [...pop.cables, cable] });
@@ -873,192 +1034,13 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const connectPopEndpoints = useCallback((popId: string, endpointAId: string, endpointBId: string, fusionType: PopFusion['fusionType'] = 'fusion', noLoss: boolean = false, vlan?: number) => {
     const currentNetwork = state.currentNetwork;
     if (!currentNetwork) return null;
-    if (endpointAId === endpointBId) return null;
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return null;
 
-    const ownerA = getPopEndpointOwner(pop, endpointAId);
-    const ownerB = getPopEndpointOwner(pop, endpointBId);
-    if (!ownerA || !ownerB) return null;
-    if (ownerA.kind === 'dio' && ownerB.kind === 'dio') return null;
+    if (!canConnectPopEndpoints(pop, endpointAId, endpointBId)) return null;
 
-    const isEquipmentKind = (kind: typeof ownerA.kind) =>
-      kind === 'olt' || kind === 'switch' || kind === 'router';
-
-    // Regras de modelagem realista de rack:
-    // - cabo so termina em DIO
-    // - equipamento ativo (OLT/SW/RTR) so conecta ao DIO
-    if ((ownerA.kind === 'cable' && ownerB.kind !== 'dio') || (ownerB.kind === 'cable' && ownerA.kind !== 'dio')) {
-      return null;
-    }
-    if ((isEquipmentKind(ownerA.kind) && ownerB.kind !== 'dio') || (isEquipmentKind(ownerB.kind) && ownerA.kind !== 'dio')) {
-      return null;
-    }
-
-    const isInactivePonEndpoint = (endpointId: string) => {
-      if (!endpointId.startsWith('olt:')) return false;
-      const parts = endpointId.split(':');
-      const oltId = parts[1];
-      const olt = pop.olts.find((item) => item.id === oltId);
-      if (!olt) return true;
-
-      if (endpointId.includes(':u:')) {
-        const uplinkIndex = Number.parseInt(parts[3] || '', 10);
-        if (Number.isNaN(uplinkIndex)) return true;
-        const uplink = olt.uplinks.find((item) => item.index === uplinkIndex);
-        return !uplink || !uplink.active;
-      }
-
-      if (endpointId.includes(':b:')) {
-        const portIndex = Number.parseInt(parts[3] || '', 10);
-        if (Number.isNaN(portIndex)) return true;
-        const port = (olt.bootPorts || []).find((item) => item.index === portIndex);
-        return !port || !port.active;
-      }
-
-      if (endpointId.includes(':c:')) {
-        const portIndex = Number.parseInt(parts[3] || '', 10);
-        if (Number.isNaN(portIndex)) return true;
-        const port = (olt.consolePorts || []).find((item) => item.index === portIndex);
-        return !port || !port.active;
-      }
-
-      const slotIndex = Number.parseInt(parts[3] || '', 10);
-      const ponIndex = Number.parseInt(parts[5] || '', 10);
-      if (Number.isNaN(slotIndex) || Number.isNaN(ponIndex)) return true;
-      const slot = olt.slots.find((item) => item.index === slotIndex);
-      const pon = slot?.pons.find((item) => item.index === ponIndex);
-      return !pon || !pon.active;
-    };
-    const isInactiveSwitchOrRouterEndpoint = (endpointId: string) => {
-      if (endpointId.startsWith('switch:')) {
-        const parts = endpointId.split(':');
-        const switchId = parts[1];
-        const kind = parts[2];
-        const index = Number.parseInt(parts[3] || '', 10);
-        const sw = pop.switches?.find((item) => item.id === switchId);
-        if (!sw || Number.isNaN(index)) return true;
-        if (kind === 'u') return !sw.uplinks.find((item) => item.index === index)?.active;
-        return !sw.ports.find((item) => item.index === index)?.active;
-      }
-      if (endpointId.startsWith('router:')) {
-        const parts = endpointId.split(':');
-        const routerId = parts[1];
-        const role = parts[2];
-        const index = Number.parseInt(parts[3] || '', 10);
-        const router = pop.routers?.find((item) => item.id === routerId);
-        if (!router || Number.isNaN(index)) return true;
-        return !router.interfaces.find((item) => item.role.toLowerCase() === role && item.index === index)?.active;
-      }
-      return false;
-    };
-    if (
-      isInactivePonEndpoint(endpointAId) ||
-      isInactivePonEndpoint(endpointBId) ||
-      isInactiveSwitchOrRouterEndpoint(endpointAId) ||
-      isInactiveSwitchOrRouterEndpoint(endpointBId)
-    ) return null;
-
-    const duplicate = pop.fusions.some(
-      (fusion) =>
-        (fusion.endpointAId === endpointAId && fusion.endpointBId === endpointBId) ||
-        (fusion.endpointAId === endpointBId && fusion.endpointBId === endpointAId)
-    );
-    if (duplicate) return null;
-
-    const endpointKindById = (endpointId: string) => getPopEndpointOwner(pop, endpointId)?.kind;
-    const fusionsForEndpoint = (endpointId: string) =>
-      pop.fusions.filter((fusion) => fusion.endpointAId === endpointId || fusion.endpointBId === endpointId);
-
-    const canUseEndpoint = (endpointId: string, otherEndpointId: string) => {
-      const endpointKind = endpointKindById(endpointId);
-      const otherKind = endpointKindById(otherEndpointId);
-      if (!endpointKind || !otherKind) return false;
-
-      const linked = fusionsForEndpoint(endpointId);
-      if (endpointKind !== 'dio') {
-        // Cabo e portas de equipamento seguem 1:1
-        return linked.length === 0;
-      }
-
-      // Porta do DIO funciona como ponte: 1 lado cabo + 1 lado equipamento
-      if (linked.length >= 2) return false;
-      if (linked.length === 0) return true;
-
-      const existingOtherKinds = linked
-        .map((fusion) => {
-          const peerId = fusion.endpointAId === endpointId ? fusion.endpointBId : fusion.endpointAId;
-          return endpointKindById(peerId);
-        })
-        .filter((kind): kind is 'dio' | 'cable' | 'olt' | 'switch' | 'router' => Boolean(kind));
-
-      const hasCableSide = existingOtherKinds.some((kind) => kind === 'cable');
-      const hasEquipmentSide = existingOtherKinds.some((kind) => isEquipmentKind(kind));
-
-      if (otherKind === 'cable') return !hasCableSide;
-      if (isEquipmentKind(otherKind)) return !hasEquipmentSide;
-      return false;
-    };
-
-    if (!canUseEndpoint(endpointAId, endpointBId) || !canUseEndpoint(endpointBId, endpointAId)) return null;
-
-    const fusion: PopFusion = {
-      id: generateId(),
-      endpointAId,
-      endpointBId,
-      fusionType,
-      attenuation: noLoss ? 0 : fusionType === 'connector' ? 0.2 : fusionType === 'mechanical' ? 0.2 : 0.1,
-      vlan: typeof vlan === 'number' ? vlan : undefined,
-      dateCreated: new Date().toISOString(),
-    };
-
-    const parseCableEndpoint = (endpointId: string) => {
-      if (!endpointId.startsWith('cable:')) return null;
-      const parts = endpointId.split(':');
-      const cableId = parts[1];
-      const marker = parts[2];
-      const fiberNumber = Number.parseInt(parts[3] || '', 10);
-      if (!cableId || marker !== 'f' || Number.isNaN(fiberNumber)) return null;
-      return { cableId, fiberNumber };
-    };
-
-    const endpointA = parseCableEndpoint(endpointAId);
-    const endpointB = parseCableEndpoint(endpointBId);
-    const updatedCables = (pop.cables || []).map((cable) => {
-      const endpointMatchesA = endpointA?.cableId === cable.id;
-      const endpointMatchesB = endpointB?.cableId === cable.id;
-      if (!endpointMatchesA && !endpointMatchesB) return cable;
-
-      return {
-        ...cable,
-        fibers: cable.fibers.map((fiber) => {
-          const matchesA = endpointMatchesA && fiber.number === endpointA!.fiberNumber;
-          const matchesB = endpointMatchesB && fiber.number === endpointB!.fiberNumber;
-          if (!matchesA && !matchesB) return fiber;
-
-          let connectedTo: string | undefined = fiber.connectedTo;
-          if (matchesA && endpointB) {
-            const targetCable = (pop.cables || []).find((item) => item.id === endpointB.cableId);
-            const targetFiber = targetCable?.fibers.find((item) => item.number === endpointB.fiberNumber);
-            connectedTo = targetFiber?.id;
-          }
-          if (matchesB && endpointA) {
-            const targetCable = (pop.cables || []).find((item) => item.id === endpointA.cableId);
-            const targetFiber = targetCable?.fibers.find((item) => item.number === endpointA.fiberNumber);
-            connectedTo = targetFiber?.id;
-          }
-
-          const nextStatus: Fiber['status'] = fiber.status === 'faulty' ? 'faulty' : 'active';
-
-          return {
-            ...fiber,
-            connectedTo,
-            fusionId: fusion.id,
-            status: nextStatus,
-          };
-        }),
-      };
-    });
+    const fusion = buildPopFusion(endpointAId, endpointBId, fusionType, noLoss, vlan);
+    const updatedCables = applyPopFusionToCables(pop, fusion);
 
     updatePop(popId, { fusions: [...pop.fusions, fusion], cables: updatedCables });
     return fusion;
@@ -1069,22 +1051,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     if (!currentNetwork) return;
     const pop = (currentNetwork.pops || []).find((item) => item.id === popId);
     if (!pop) return;
-    const updatedCables = (pop.cables || []).map((cable) => ({
-      ...cable,
-      fibers: cable.fibers.map((fiber) =>
-        fiber.fusionId === fusionId
-          ? (() => {
-              const nextStatus: Fiber['status'] = fiber.status === 'faulty' ? 'faulty' : 'inactive';
-              return {
-                ...fiber,
-                fusionId: undefined,
-                connectedTo: undefined,
-                status: nextStatus,
-              };
-            })()
-          : fiber
-      ),
-    }));
+
+    const updatedCables = clearPopFusionFromCables(pop.cables || [], fusionId);
     updatePop(popId, {
       fusions: pop.fusions.filter((fusion) => fusion.id !== fusionId),
       cables: updatedCables,
@@ -1612,138 +1580,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const importNetwork = useCallback((networkData: string) => {
     try {
       const networkRaw = JSON.parse(networkData) as Network;
-      const network: Network = {
-        ...networkRaw,
-        cities: networkRaw.cities || [],
-        pops: (networkRaw.pops || []).map((pop) => ({
-          ...pop,
-          fusionLayout: pop.fusionLayout || {},
-          olts: (pop.olts || []).map((olt) => ({
-            ...olt,
-            bootPorts: (olt.bootPorts || []).map((port, idx) => ({
-              ...port,
-              index: port.index || idx + 1,
-              active: typeof (port as OltAuxPort & { active?: boolean }).active === 'boolean'
-                ? (port as OltAuxPort & { active?: boolean }).active!
-                : true,
-              role: 'BOOT',
-            })),
-            consolePorts: (olt.consolePorts || []).map((port, idx) => ({
-              ...port,
-              index: port.index || idx + 1,
-              active: typeof (port as OltAuxPort & { active?: boolean }).active === 'boolean'
-                ? (port as OltAuxPort & { active?: boolean }).active!
-                : true,
-              role: 'CONSOLE',
-            })),
-            uplinks: (olt.uplinks || []).map((uplink, uplinkIdx) => ({
-              ...uplink,
-              index: uplink.index || uplinkIdx + 1,
-              active: typeof (uplink as OltUplink & { active?: boolean }).active === 'boolean'
-                ? (uplink as OltUplink & { active?: boolean }).active!
-                : true,
-              connector: uplink.connector || 'SFP+',
-              speed: uplink.speed || '10G',
-            })).length > 0
-              ? (olt.uplinks || []).map((uplink, uplinkIdx) => ({
-                  ...uplink,
-                  index: uplink.index || uplinkIdx + 1,
-                  active: typeof (uplink as OltUplink & { active?: boolean }).active === 'boolean'
-                    ? (uplink as OltUplink & { active?: boolean }).active!
-                    : true,
-                  connector: uplink.connector || 'SFP+',
-                  speed: uplink.speed || '10G',
-                }))
-              : [
-                  { id: generateId(), index: 1, active: true, connector: 'SFP+', speed: '10G' },
-                  { id: generateId(), index: 2, active: true, connector: 'SFP+', speed: '10G' },
-                ],
-            slots: (olt.slots || []).map((slot, slotIndex) => ({
-              ...slot,
-              index: slot.index || slotIndex + 1,
-              pons: (slot.pons || []).map((pon, ponIndex) => ({
-                ...pon,
-                index: pon.index || ponIndex + 1,
-                active: typeof (pon as OltPon & { active?: boolean }).active === 'boolean'
-                  ? (pon as OltPon & { active?: boolean }).active!
-                  : false,
-                gbic: {
-                  id: pon.gbic?.id || generateId(),
-                  model: pon.gbic?.model || '',
-                  connector: 'UPC',
-                  txPowerDbm: typeof pon.gbic?.txPowerDbm === 'number' ? pon.gbic.txPowerDbm : 0,
-                },
-                })),
-            })),
-          })),
-        switches: (pop.switches || []).map((sw) => ({
-            ...sw,
-            ports: (sw.ports || []).map((port, portIdx) => ({
-              ...port,
-              index: port.index || portIdx + 1,
-              active: typeof (port as PopSwitchPort & { active?: boolean }).active === 'boolean'
-                ? (port as PopSwitchPort & { active?: boolean }).active!
-                : true,
-            })),
-            uplinks: (sw.uplinks || []).map((port, portIdx) => ({
-              ...port,
-              index: port.index || portIdx + 1,
-              active: typeof (port as PopSwitchPort & { active?: boolean }).active === 'boolean'
-                ? (port as PopSwitchPort & { active?: boolean }).active!
-                : true,
-            })),
-        })),
-        routers: (pop.routers || []).map((router) => ({
-            ...router,
-            interfaces: (router.interfaces || []).map((iface, ifaceIdx) => ({
-              ...iface,
-              index: iface.index || ifaceIdx + 1,
-              active: typeof (iface as PopRouterInterface & { active?: boolean }).active === 'boolean'
-                ? (iface as PopRouterInterface & { active?: boolean }).active!
-                : true,
-          })),
-        })),
-        cables: (pop.cables || []).map((cable) => {
-          const fibersPerTube = Math.max(1, cable.fibersPerTube || 12);
-          const looseTubeCount = Math.max(
-            1,
-            cable.looseTubeCount || Math.ceil(cable.fiberCount / fibersPerTube)
-          );
-          const maxCapacity = looseTubeCount * fibersPerTube;
-          const fiberCount = Math.min(Math.max(1, cable.fiberCount), maxCapacity);
-          const fibers = (cable.fibers || []).map((fiber, index) => ({
-            ...fiber,
-            tubeNumber: (fiber as Fiber).tubeNumber || Math.floor(index / fibersPerTube) + 1,
-          }));
-
-          return {
-            ...cable,
-            fiberCount,
-            looseTubeCount,
-            fibersPerTube,
-            fibers,
-          };
-        }),
-      })),
-        reserves: networkRaw.reserves || [],
-        cables: (networkRaw.cables || []).map((cable) => {
-          const fibersPerTube = Math.max(1, (cable as Partial<Cable>).fibersPerTube || 12);
-          const looseTubeCount = Math.max(1, (cable as Partial<Cable>).looseTubeCount || Math.ceil(cable.fiberCount / fibersPerTube));
-          const model = (cable as Partial<Cable>).model || 'AS-80';
-          const normalizedFibers = (cable.fibers || []).map((fiber, index) => ({
-            ...fiber,
-            tubeNumber: (fiber as Fiber & { tubeNumber?: number }).tubeNumber || Math.floor(index / fibersPerTube) + 1,
-          }));
-          return {
-            ...cable,
-            model,
-            fibersPerTube,
-            looseTubeCount,
-            fibers: normalizedFibers,
-            attachments: cable.attachments || [],
-          };
-        }),
-      };
+      const network = normalizeImportedNetwork(networkRaw);
       setState(prev => ({ ...prev, currentNetwork: network }));
       return true;
     } catch {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import type { Box as BoxType, Cable as CableType, City, Pop, Position } from '@/types/ftth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,8 +37,6 @@ import {
   Folder,
   FolderOpen,
 } from 'lucide-react';
-import { BoxDetail } from './BoxDetail';
-import { CableDetail } from './CableDetail';
 import { toast } from 'sonner';
 
 type ExplorerMapEntityType = 'pop' | 'box' | 'reserve';
@@ -72,6 +70,13 @@ const createExplorerId = () =>
   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+
+const BoxDetail = lazy(() =>
+  import('./BoxDetail').then((module) => ({ default: module.BoxDetail }))
+);
+const CableDetail = lazy(() =>
+  import('./CableDetail').then((module) => ({ default: module.CableDetail }))
+);
 
 export function NetworkPanel() {
   const {
@@ -1486,19 +1491,23 @@ export function NetworkPanel() {
       </Card>
 
       {selectedBoxForDetail && (
-        <BoxDetail
-          box={selectedBoxForDetail}
-          open={!!selectedBoxForDetail}
-          onOpenChange={(open: boolean) => !open && setSelectedBoxForDetail(null)}
-        />
+        <Suspense fallback={null}>
+          <BoxDetail
+            box={selectedBoxForDetail}
+            open={!!selectedBoxForDetail}
+            onOpenChange={(open: boolean) => !open && setSelectedBoxForDetail(null)}
+          />
+        </Suspense>
       )}
 
       {selectedCableForDetail && (
-        <CableDetail
-          cable={selectedCableForDetail}
-          open={!!selectedCableForDetail}
-          onOpenChange={(open: boolean) => !open && setSelectedCableForDetail(null)}
-        />
+        <Suspense fallback={null}>
+          <CableDetail
+            cable={selectedCableForDetail}
+            open={!!selectedCableForDetail}
+            onOpenChange={(open: boolean) => !open && setSelectedCableForDetail(null)}
+          />
+        </Suspense>
       )}
 
       <Dialog

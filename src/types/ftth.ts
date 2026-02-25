@@ -164,6 +164,8 @@ export interface PopCable {
   fibersPerTube?: number;
   fibers: Fiber[];
   status: 'active' | 'inactive' | 'maintenance';
+  linkedNetworkCableId?: string;
+  mapEndpointRole?: 'incoming' | 'outgoing';
 }
 
 export interface PopFusion {

@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Pencil, Scissors, Trash2, X } from 'lucide-react';
 import { FullscreenModalShell } from './FullscreenModalShell';
@@ -64,6 +63,12 @@ type PonConfigState = {
   txPowerDbm: string;
 };
 
+type MapCableTargetOption = {
+  id: string;
+  label: string;
+  kind: 'box' | 'pop';
+};
+
 export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const {
     currentNetwork,
@@ -81,24 +86,25 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     removeOltFromPop,
     removeSwitchFromPop,
     removeRouterFromPop,
-    addCableToPop,
     connectPopEndpoints,
     disconnectPopFusion,
   } = useNetworkStore();
 
   const currentPop = currentNetwork?.pops.find((item) => item.id === pop.id) || pop;
   const city = currentNetwork?.cities.find((item) => item.id === currentPop.cityId);
-  const mapCableTargets = useMemo(
+  const mapCableTargets = useMemo<MapCableTargetOption[]>(
     () => [
       ...((currentNetwork?.boxes || []).map((box) => ({
         id: box.id,
         label: `${box.name} (Caixa ${box.type})`,
+        kind: 'box' as const,
       }))),
       ...((currentNetwork?.pops || [])
         .filter((item) => item.id !== currentPop.id)
         .map((item) => ({
           id: item.id,
           label: `${item.name} (POP)`,
+          kind: 'pop' as const,
         }))),
     ],
     [currentNetwork?.boxes, currentNetwork?.pops, currentPop.id]
@@ -123,17 +129,16 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [routerLanCount, setRouterLanCount] = useState(8);
 
   const [cableName, setCableName] = useState('');
-  const [cableType, setCableType] = useState<'bigtail' | 'backbone' | 'patchcord' | 'apc-upc'>('bigtail');
   const [cableFiberCount, setCableFiberCount] = useState(12);
-  const [cableLooseTubeCount, setCableLooseTubeCount] = useState(1);
-  const [cableFibersPerTube, setCableFibersPerTube] = useState(12);
+  const [mapCableDirection, setMapCableDirection] = useState<'outgoing' | 'incoming'>('outgoing');
+  const [editPositionLat, setEditPositionLat] = useState(() => pop.position.lat.toFixed(6));
+  const [editPositionLng, setEditPositionLng] = useState(() => pop.position.lng.toFixed(6));
   const [mainTab, setMainTab] = useState<'infra' | 'fusions' | 'signal'>('infra');
   const [infraTab, setInfraTab] = useState<'dio' | 'olt' | 'switch' | 'router' | 'cable'>('dio');
   const [rackFusionScope, setRackFusionScope] = useState<'all' | 'dio-bigtail'>('all');
   const [rackFusionDioId, setRackFusionDioId] = useState('');
   const [dioFusionOpen, setDioFusionOpen] = useState(false);
   const [dioFusionTargetId, setDioFusionTargetId] = useState('');
-  const [createMapCable, setCreateMapCable] = useState(false);
   const [mapCableTargetId, setMapCableTargetId] = useState('');
   const [mapCableType, setMapCableType] = useState<Cable['type']>('distribution');
   const [mapCableModel, setMapCableModel] = useState('AS-80');
@@ -404,7 +409,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     [mapCableType]
   );
   const mapCableCapacity = Math.max(1, mapCableLooseTubeCount * mapCableFibersPerTube);
-  const popCableCapacity = Math.max(1, cableLooseTubeCount * cableFibersPerTube);
+  const selectedMapCableTarget = useMemo(
+    () => mapCableTargets.find((target) => target.id === mapCableTargetId) || null,
+    [mapCableTargets, mapCableTargetId]
+  );
 
   useEffect(() => {
     if (mapCableModelOptions.length === 0) return;
@@ -414,10 +422,21 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, [mapCableModel, mapCableModelOptions]);
 
   useEffect(() => {
-    if (cableFiberCount > popCableCapacity) {
-      setCableFiberCount(popCableCapacity);
+    if (cableFiberCount > mapCableCapacity) {
+      setCableFiberCount(mapCableCapacity);
     }
-  }, [cableFiberCount, popCableCapacity]);
+  }, [cableFiberCount, mapCableCapacity]);
+
+  useEffect(() => {
+    if (mapCableDirection === 'incoming' && !mapCableTargetId) {
+      setMapCableDirection('outgoing');
+    }
+  }, [mapCableDirection, mapCableTargetId]);
+
+  useEffect(() => {
+    setEditPositionLat(currentPop.position.lat.toFixed(6));
+    setEditPositionLng(currentPop.position.lng.toFixed(6));
+  }, [currentPop.id, currentPop.position.lat, currentPop.position.lng]);
 
   useEffect(() => {
     if (currentPop.dios.length === 0) {
@@ -897,6 +916,94 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     );
   };
 
+  const mapEndpointSelectionLabel =
+    mapCableDirection === 'incoming'
+      ? 'Origem no mapa (caixa ou POP)'
+      : 'Destino no mapa (caixa ou POP) - opcional';
+
+  const mapEndpointRequired = mapCableDirection === 'incoming';
+
+  const handleLaunchMapCable = useCallback(() => {
+    const trimmedName = cableName.trim();
+    if (!trimmedName) return;
+    if (mapEndpointRequired && !mapCableTargetId) {
+      toast.error('Selecione a origem no mapa para cabo chegando neste POP.');
+      return;
+    }
+
+    const startPoint = mapCableDirection === 'incoming' ? mapCableTargetId : currentPop.id;
+    const endPoint = mapCableDirection === 'incoming' ? currentPop.id : mapCableTargetId;
+    const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
+
+    onOpenChange(false);
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent('ftth:start-map-cable-drawing', {
+          detail: {
+            name: trimmedName,
+            type: mapCableType,
+            model: mapCableModel,
+            fiberCount,
+            looseTubeCount: mapCableLooseTubeCount,
+            fibersPerTube: mapCableFibersPerTube,
+            startPoint,
+            endPoint,
+          },
+        })
+      );
+    }, 120);
+
+    if (selectedMapCableTarget?.kind === 'pop') {
+      toast.success('Cabo POP a POP iniciado. As terminacoes serao criadas automaticamente ao salvar no mapa.');
+    } else {
+      toast.success('Desenho do cabo iniciado. As terminacoes no POP serao criadas automaticamente ao salvar no mapa.');
+    }
+
+    setCableName('');
+    setCableFiberCount(Math.min(12, mapCableCapacity));
+    setMapCableTargetId('');
+    setMapCableDirection('outgoing');
+  }, [
+    cableFiberCount,
+    cableName,
+    currentPop.id,
+    mapCableCapacity,
+    mapCableDirection,
+    mapCableFibersPerTube,
+    mapCableLooseTubeCount,
+    mapCableModel,
+    mapCableTargetId,
+    mapCableType,
+    mapEndpointRequired,
+    onOpenChange,
+    selectedMapCableTarget?.kind,
+  ]);
+
+  const handleSavePopPosition = useCallback(() => {
+    const parsedLat = Number.parseFloat(editPositionLat.replace(',', '.'));
+    const parsedLng = Number.parseFloat(editPositionLng.replace(',', '.'));
+    if (Number.isNaN(parsedLat) || Number.isNaN(parsedLng)) {
+      toast.error('Latitude/Longitude invalidas.');
+      return;
+    }
+    if (parsedLat < -90 || parsedLat > 90) {
+      toast.error('Latitude deve estar entre -90 e 90.');
+      return;
+    }
+    if (parsedLng < -180 || parsedLng > 180) {
+      toast.error('Longitude deve estar entre -180 e 180.');
+      return;
+    }
+
+    updatePop(currentPop.id, {
+      position: {
+        lat: parsedLat,
+        lng: parsedLng,
+      },
+    });
+    toast.success('Posicao do POP atualizada.');
+  }, [currentPop.id, editPositionLat, editPositionLng, updatePop]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FullscreenModalShell>
@@ -933,6 +1040,26 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Roteadores</p><p className="text-2xl font-semibold">{(currentPop.routers || []).length}</p></div>
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Cabos POP</p><p className="text-2xl font-semibold">{currentPop.cables.length}</p></div>
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Fusoes</p><p className="text-2xl font-semibold">{currentPop.fusions.length}</p></div>
+              </div>
+
+              <div className="rounded-lg border p-4 space-y-3">
+                <div>
+                  <p className="text-sm font-semibold">Posicao geografica do POP</p>
+                  <p className="text-xs text-gray-500">Voce tambem pode arrastar o marcador no mapa quando o modo Editar estiver ativo.</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label>Latitude</Label>
+                    <Input value={editPositionLat} onChange={(event) => setEditPositionLat(event.target.value)} placeholder="-15.780148" />
+                  </div>
+                  <div>
+                    <Label>Longitude</Label>
+                    <Input value={editPositionLng} onChange={(event) => setEditPositionLng(event.target.value)} placeholder="-47.929170" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={handleSavePopPosition}>Salvar posicao</Button>
+                </div>
               </div>
 
               <Tabs value={infraTab} onValueChange={(value) => setInfraTab(value as 'dio' | 'olt' | 'switch' | 'router' | 'cable')} className="space-y-4">
@@ -1038,163 +1165,51 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 </TabsContent>
 
                 <TabsContent value="cable" className="space-y-3 border rounded-lg p-4">
-                  <h4 className="font-semibold text-sm">Cadastrar Cabo do POP</h4>
+                  <h4 className="font-semibold text-sm">Lancar Cabo no Mapa (POP)</h4>
                   <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
-                    <div><Label>Nome</Label><Input value={cableName} onChange={(e) => setCableName(e.target.value)} placeholder="BIGTAIL 24F" /></div>
-                    <div><Label>Tipo</Label><Select value={cableType} onValueChange={(v: 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc') => setCableType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="bigtail">Bigtail</SelectItem><SelectItem value="backbone">Backbone</SelectItem><SelectItem value="patchcord">Patchcord</SelectItem><SelectItem value="apc-upc">APC-UPC</SelectItem></SelectContent></Select></div>
-                    <div><Label>Tubos loose</Label><Input type="number" min={1} value={cableLooseTubeCount} onChange={(e) => setCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
-                    <div><Label>Fibras por tubo</Label><Input type="number" min={1} value={cableFibersPerTube} onChange={(e) => setCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
-                    <div><Label>Fibras</Label><Input type="number" min={1} max={popCableCapacity} value={cableFiberCount} onChange={(e) => setCableFiberCount(Math.max(1, Math.min(popCableCapacity, Number.parseInt(e.target.value || '1', 10))))} /></div>
-                  </div>
-                  <p className="text-xs text-zinc-500">Capacidade do cabo POP: {popCableCapacity} fibras ({cableLooseTubeCount} x {cableFibersPerTube}).</p>
-                  <div className="rounded-lg border bg-gray-50 px-3 py-2 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium">Criar cabo no mapa junto com cabo POP</p>
-                        <p className="text-xs text-gray-500">Ative para refletir no mapa e editar tracado pela tela do mapa.</p>
-                      </div>
-                      <Switch checked={createMapCable} onCheckedChange={setCreateMapCable} />
+                    <div><Label>Nome</Label><Input value={cableName} onChange={(e) => setCableName(e.target.value)} placeholder="BACKBONE POP A-POP B" /></div>
+                    <div>
+                      <Label>Direcao</Label>
+                      <Select value={mapCableDirection} onValueChange={(v: 'outgoing' | 'incoming') => setMapCableDirection(v)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="outgoing">Saindo deste POP</SelectItem>
+                          <SelectItem value="incoming" disabled={!mapCableTargetId}>Chegando neste POP</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
-                    {createMapCable && (
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <div>
-                          <Label>Tipo do cabo no mapa</Label>
-                          <Select value={mapCableType} onValueChange={(v: Cable['type']) => setMapCableType(v)}>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="distribution">Distribuicao</SelectItem>
-                              <SelectItem value="feeder">Feeder</SelectItem>
-                              <SelectItem value="backbone">Backbone</SelectItem>
-                              <SelectItem value="drop">Drop</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label>Modelo do cabo no mapa</Label>
-                          <Select value={mapCableModel} onValueChange={setMapCableModel}>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {mapCableModelOptions.map((model) => (
-                                <SelectItem key={model.id} value={model.id}>
-                                  {model.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label>Tubos loose</Label>
-                          <Input
-                            type="number"
-                            min={1}
-                            value={mapCableLooseTubeCount}
-                            onChange={(e) => setMapCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
-                          />
-                        </div>
-                        <div>
-                          <Label>Fibras por tubo</Label>
-                          <Input
-                            type="number"
-                            min={1}
-                            value={mapCableFibersPerTube}
-                            onChange={(e) => setMapCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))}
-                          />
-                        </div>
-                      </div>
-                    )}
-                    {createMapCable && (
-                      <div>
-                        <Label>Destino no mapa (caixa ou POP) - opcional</Label>
-                        <Select value={mapCableTargetId || '__none__'} onValueChange={(v) => setMapCableTargetId(v === '__none__' ? '' : v)}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none__">Selecione um destino</SelectItem>
-                            {mapCableTargets.map((target) => (
-                              <SelectItem key={target.id} value={target.id}>
-                                {target.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )}
-                    {createMapCable && (
-                      <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800">
-                        Ao adicionar, esta tela sera fechada e o mapa abrira no modo de desenho do cabo automaticamente.
-                        O cabo sera salvo apenas depois que voce finalizar o tracado no mapa.
-                      </div>
-                    )}
+                    <div><Label>Tipo (mapa)</Label><Select value={mapCableType} onValueChange={(v: Cable['type']) => setMapCableType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="distribution">Distribuicao</SelectItem><SelectItem value="feeder">Feeder</SelectItem><SelectItem value="backbone">Backbone</SelectItem><SelectItem value="drop">Drop</SelectItem></SelectContent></Select></div>
+                    <div><Label>Tubos loose</Label><Input type="number" min={1} value={mapCableLooseTubeCount} onChange={(e) => setMapCableLooseTubeCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                    <div><Label>Fibras por tubo</Label><Input type="number" min={1} value={mapCableFibersPerTube} onChange={(e) => setMapCableFibersPerTube(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div><Label>Modelo (mapa)</Label><Select value={mapCableModel} onValueChange={setMapCableModel}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{mapCableModelOptions.map((model) => (<SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>))}</SelectContent></Select></div>
+                    <div><Label>Fibras</Label><Input type="number" min={1} max={mapCableCapacity} value={cableFiberCount} onChange={(e) => setCableFiberCount(Math.max(1, Math.min(mapCableCapacity, Number.parseInt(e.target.value || '1', 10))))} /></div>
+                  </div>
+                  <div>
+                    <Label>{mapEndpointSelectionLabel}</Label>
+                    <Select value={mapCableTargetId || '__none__'} onValueChange={(v) => setMapCableTargetId(v === '__none__' ? '' : v)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">{mapEndpointRequired ? 'Selecione a origem' : 'Sem destino'}</SelectItem>
+                        {mapCableTargets.map((target) => (
+                          <SelectItem key={target.id} value={target.id}>
+                            {target.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs text-blue-800">
+                    Ao salvar no mapa, o sistema cria automaticamente terminacoes no POP de origem e no POP de destino (quando o destino for POP).
                   </div>
                   <Button
-                    disabled={!cableName.trim()}
-                    onClick={() => {
-                    if (!cableName.trim()) return;
-                    const created = addCableToPop(currentPop.id, {
-                      name: cableName.trim(),
-                      type: cableType,
-                      fiberCount: cableFiberCount,
-                      looseTubeCount: cableLooseTubeCount,
-                      fibersPerTube: cableFibersPerTube,
-                      status: 'active',
-                    });
-                    if (!created) {
-                      toast.error('Nao foi possivel criar o cabo interno do POP.');
-                      return;
-                    }
-                    if (createMapCable && mapCableTargetId) {
-                      onOpenChange(false);
-                      const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
-                      window.setTimeout(() => {
-                        window.dispatchEvent(
-                          new CustomEvent('ftth:start-map-cable-drawing', {
-                            detail: {
-                              name: `${cableName.trim()} [MAPA]`,
-                              type: mapCableType,
-                              model: mapCableModel,
-                              fiberCount,
-                              looseTubeCount: mapCableLooseTubeCount,
-                              fibersPerTube: mapCableFibersPerTube,
-                              startPoint: currentPop.id,
-                              endPoint: mapCableTargetId,
-                            },
-                          })
-                        );
-                      }, 120);
-                      toast.success('Cabo POP criado. Mapa aberto para desenhar o tracado.');
-                    } else if (createMapCable) {
-                      onOpenChange(false);
-                      const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
-                      window.setTimeout(() => {
-                        window.dispatchEvent(
-                          new CustomEvent('ftth:start-map-cable-drawing', {
-                            detail: {
-                              name: `${cableName.trim()} [MAPA]`,
-                              type: mapCableType,
-                              model: mapCableModel,
-                              fiberCount,
-                              looseTubeCount: mapCableLooseTubeCount,
-                              fibersPerTube: mapCableFibersPerTube,
-                              startPoint: currentPop.id,
-                              endPoint: '',
-                            },
-                          })
-                        );
-                      }, 120);
-                      toast.success('Cabo POP criado sem destino. Mapa aberto para desenhar o tracado.');
-                    }
-                    setCableName('');
-                    setCableLooseTubeCount(1);
-                    setCableFibersPerTube(12);
-                    setMapCableTargetId('');
-                  }}
+                    disabled={!cableName.trim() || (mapEndpointRequired && !mapCableTargetId)}
+                    onClick={handleLaunchMapCable}
                   >
-                    {createMapCable ? 'Adicionar e Desenhar no Mapa' : 'Adicionar Cabo POP (Interno)'}
+                    Abrir Mapa para Desenhar
                   </Button>
                 </TabsContent>
               </Tabs>

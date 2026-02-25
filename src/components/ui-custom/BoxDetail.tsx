@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Activity, Link2, Unlink, Zap, Save, Trash2, User, MapPin, Calendar, Settings, CheckCircle2, XCircle, Edit3, Plus, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
 import { CABLE_MODEL_OPTIONS, type Fiber, type Box, type Splitter } from '@/types/ftth';
+import { toast } from 'sonner';
 import { FusionBoardCanvas } from './box-detail/FusionBoardCanvas';
 import type { DragState, EndpointOption, EntityPosition } from './box-detail/types';
 
@@ -107,6 +108,8 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const [boxName, setBoxName] = useState(currentBox.name);
   const [boxAddress, setBoxAddress] = useState(currentBox.address || '');
   const [boxStatus, setBoxStatus] = useState(currentBox.status);
+  const [editPositionLat, setEditPositionLat] = useState(() => currentBox.position.lat.toFixed(6));
+  const [editPositionLng, setEditPositionLng] = useState(() => currentBox.position.lng.toFixed(6));
   const [continuityTestResult, setContinuityTestResult] = useState<BoxContinuityResult | null>(null);
   const [showAddCableDialog, setShowAddCableDialog] = useState(false);
   const [newCableName, setNewCableName] = useState('');
@@ -288,6 +291,11 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     if (open) return;
     layoutInitKeyRef.current = '';
   }, [open]);
+
+  useEffect(() => {
+    setEditPositionLat(currentBox.position.lat.toFixed(6));
+    setEditPositionLng(currentBox.position.lng.toFixed(6));
+  }, [currentBox.id, currentBox.position.lat, currentBox.position.lng]);
 
   const fiberUsageStats = useMemo(() => {
     const total = boxCableFibers.length;
@@ -801,6 +809,31 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     setEditingBox(false);
   };
 
+  const handleSaveBoxPosition = () => {
+    const parsedLat = Number.parseFloat(editPositionLat.replace(',', '.'));
+    const parsedLng = Number.parseFloat(editPositionLng.replace(',', '.'));
+    if (Number.isNaN(parsedLat) || Number.isNaN(parsedLng)) {
+      toast.error('Latitude/Longitude invalidas.');
+      return;
+    }
+    if (parsedLat < -90 || parsedLat > 90) {
+      toast.error('Latitude deve estar entre -90 e 90.');
+      return;
+    }
+    if (parsedLng < -180 || parsedLng > 180) {
+      toast.error('Longitude deve estar entre -180 e 180.');
+      return;
+    }
+
+    updateBox(currentBox.id, {
+      position: {
+        lat: parsedLat,
+        lng: parsedLng,
+      },
+    });
+    toast.success('Posicao da caixa atualizada.');
+  };
+
   const handleTestContinuity = (fiber: Fiber) => {
     window.dispatchEvent(new CustomEvent('ftth:trace-fiber', { detail: { fiberId: fiber.id } }));
 
@@ -1213,6 +1246,26 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                     </div>
                   )}
                   {currentBox.manufacturer && <div><Label className="text-gray-500">Fabricante</Label><p className="font-medium">{currentBox.manufacturer}</p></div>}
+                </div>
+
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold">Posicao geografica da caixa</p>
+                    <p className="text-xs text-gray-500">Voce tambem pode arrastar o marcador no mapa quando o modo Editar estiver ativo.</p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <Label>Latitude</Label>
+                      <Input value={editPositionLat} onChange={(event) => setEditPositionLat(event.target.value)} placeholder="-15.780148" />
+                    </div>
+                    <div>
+                      <Label>Longitude</Label>
+                      <Input value={editPositionLng} onChange={(event) => setEditPositionLng(event.target.value)} placeholder="-47.929170" />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button onClick={handleSaveBoxPosition}>Salvar posicao</Button>
+                  </div>
                 </div>
 
                 <div className="rounded-lg border p-4 space-y-3">

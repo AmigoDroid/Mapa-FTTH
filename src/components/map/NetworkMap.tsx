@@ -88,6 +88,8 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
     selectPop,
     addCity,
     addPop,
+    updatePop,
+    updateBox,
     addBox, 
     removeBox,
     addReserve,
@@ -805,7 +807,10 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
         iconAnchor: [13, 13],
       });
 
-      const marker = L.marker([pop.position.lat, pop.position.lng], { icon: popIcon });
+      const marker = L.marker([pop.position.lat, pop.position.lng], {
+        icon: popIcon,
+        draggable: isEditing,
+      });
       const city = (currentNetwork?.cities || []).find((item: City) => item.id === pop.cityId);
       marker.bindPopup(`
         <div style="min-width: 200px;">
@@ -818,12 +823,24 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       marker.on('click', () => {
         selectPop(pop);
       });
+      if (isEditing) {
+        marker.on('dragend', (event: any) => {
+          const latLng = event.target.getLatLng();
+          updatePop(pop.id, {
+            position: {
+              lat: latLng.lat,
+              lng: latLng.lng,
+            },
+          });
+        });
+      }
       marker.addTo(markersLayer.current);
     });
 
     currentNetwork?.boxes.forEach((box: Box) => {
       const marker = L.marker([box.position.lat, box.position.lng], {
         icon: createBoxIcon(box.type, box.status),
+        draggable: isEditing,
       });
 
       const popupContent = `
@@ -842,6 +859,18 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       marker.on('click', () => {
         selectBox(box);
       });
+
+      if (isEditing) {
+        marker.on('dragend', (event: any) => {
+          const latLng = event.target.getLatLng();
+          updateBox(box.id, {
+            position: {
+              lat: latLng.lat,
+              lng: latLng.lng,
+            },
+          });
+        });
+      }
 
       marker.on('contextmenu', (e: any) => {
         const container = document.createElement('div');
@@ -915,7 +944,7 @@ export function NetworkMap({ height = 'calc(100vh - 80px)' }: NetworkMapProps) {
       `, { className: 'map-3d-popup' });
       marker.addTo(markersLayer.current);
     });
-  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox]);
+  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing]);
 
   // Atualizar cabos no mapa
   useEffect(() => {

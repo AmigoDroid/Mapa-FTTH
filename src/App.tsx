@@ -1,12 +1,6 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
-import { NetworkMap } from '@/components/map/NetworkMap';
-import { NetworkPanel } from '@/components/ui-custom/NetworkPanel';
 import { FiberColorLegend } from '@/components/ui-custom/FiberColorLegend';
-import { ContinuityTester } from '@/components/ui-custom/ContinuityTester';
-import { BoxDetail } from '@/components/ui-custom/BoxDetail';
-import { PopDetail } from '@/components/ui-custom/PopDetail';
-import { FiberAnalyzerPanel } from '@/components/ui-custom/FiberAnalyzerPanel';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -28,6 +22,29 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+
+const NetworkMap = lazy(() =>
+  import('@/components/map/NetworkMap').then((module) => ({ default: module.NetworkMap }))
+);
+const NetworkPanel = lazy(() =>
+  import('@/components/ui-custom/NetworkPanel').then((module) => ({ default: module.NetworkPanel }))
+);
+const ContinuityTester = lazy(() =>
+  import('@/components/ui-custom/ContinuityTester').then((module) => ({
+    default: module.ContinuityTester,
+  }))
+);
+const BoxDetail = lazy(() =>
+  import('@/components/ui-custom/BoxDetail').then((module) => ({ default: module.BoxDetail }))
+);
+const PopDetail = lazy(() =>
+  import('@/components/ui-custom/PopDetail').then((module) => ({ default: module.PopDetail }))
+);
+const FiberAnalyzerPanel = lazy(() =>
+  import('@/components/ui-custom/FiberAnalyzerPanel').then((module) => ({
+    default: module.FiberAnalyzerPanel,
+  }))
+);
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -68,7 +85,9 @@ function App() {
           overflow-hidden
         `}
       >
-        <NetworkPanel />
+        <Suspense fallback={<div className="h-full w-80 grid place-items-center text-xs text-gray-500">Carregando painel...</div>}>
+          <NetworkPanel />
+        </Suspense>
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -129,8 +148,14 @@ function App() {
         </header>
 
         <main className="flex-1 relative">
-          <NetworkMap />
-          <FiberAnalyzerPanel open={showFiberAnalyzer} onOpenChange={setShowFiberAnalyzer} />
+          <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-sm text-gray-500">Carregando mapa...</div>}>
+            <NetworkMap />
+          </Suspense>
+          {showFiberAnalyzer && (
+            <Suspense fallback={null}>
+              <FiberAnalyzerPanel open={showFiberAnalyzer} onOpenChange={setShowFiberAnalyzer} />
+            </Suspense>
+          )}
 
           {showLegend && <FiberColorLegend />}
 
@@ -168,26 +193,32 @@ function App() {
       </div>
 
       {selectedBox && (
-        <BoxDetail
-          box={selectedBox}
-          open={!!selectedBox}
-          onOpenChange={(open: boolean) => !open && selectBox(null)}
-        />
+        <Suspense fallback={null}>
+          <BoxDetail
+            box={selectedBox}
+            open={!!selectedBox}
+            onOpenChange={(open: boolean) => !open && selectBox(null)}
+          />
+        </Suspense>
       )}
 
       {selectedPop && (
-        <PopDetail
-          pop={selectedPop}
-          open={!!selectedPop}
-          onOpenChange={(open: boolean) => !open && selectPop(null)}
-        />
+        <Suspense fallback={null}>
+          <PopDetail
+            pop={selectedPop}
+            open={!!selectedPop}
+            onOpenChange={(open: boolean) => !open && selectPop(null)}
+          />
+        </Suspense>
       )}
 
       {showTester && (
-        <ContinuityTester
-          open={showTester}
-          onOpenChange={setShowTester}
-        />
+        <Suspense fallback={null}>
+          <ContinuityTester
+            open={showTester}
+            onOpenChange={setShowTester}
+          />
+        </Suspense>
       )}
 
       <Dialog open={showNewNetwork} onOpenChange={setShowNewNetwork}>
