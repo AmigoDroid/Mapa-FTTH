@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
 import type { Box as BoxType, Cable as CableType, City, Pop, Position } from '@/types/ftth';
+import { resolveDefaultCableModel } from '@/types/ftth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -1441,7 +1442,7 @@ export function NetworkPanel() {
                               {startBox?.name || 'Sem origem'} {'->'} {endBox?.name || 'Sem destino'}
                             </p>
                             <p>
-                              {cable.model || 'AS-80'} | {cable.fiberCount} fibras | {cable.length}m
+                              {cable.model || resolveDefaultCableModel(cable.type)} | {cable.fiberCount} fibras | {cable.length}m
                             </p>
                           </div>
                         </div>
@@ -1879,9 +1880,9 @@ export function NetworkPanel() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">Selecione o tipo</SelectItem>
-                          <SelectItem value="CEO">CEO</SelectItem>
-                          <SelectItem value="CTO">CTO</SelectItem>
-                          <SelectItem value="DIO">DIO</SelectItem>
+                          <SelectItem value="CEO">CEO - Emenda</SelectItem>
+                          <SelectItem value="CTO">CTO - Terminacao</SelectItem>
+                          <SelectItem value="DIO">DIO - Distribuicao interna</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

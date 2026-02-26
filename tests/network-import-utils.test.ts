@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Fiber, Network } from '@/types/ftth';
-import { FIBER_COLORS } from '@/types/ftth';
+import { FIBER_COLORS, resolveDefaultCableModel } from '@/types/ftth';
 import { normalizeImportedNetwork } from '@/store/networkImportUtils';
 
 const makeFiber = (id: string, number: number): Fiber => ({
@@ -144,7 +144,7 @@ describe('networkImportUtils', () => {
     expect(olt?.uplinks[0]?.connector).toBe('SFP+');
     expect(olt?.uplinks[0]?.speed).toBe('10G');
 
-    expect(networkCable?.model).toBe('AS-80');
+    expect(networkCable?.model).toBe(resolveDefaultCableModel('distribution'));
     expect(networkCable?.attachments).toEqual([]);
     expect(networkCable?.fiberCount).toBe(12);
     expect(networkCable?.fibersPerTube).toBe(12);

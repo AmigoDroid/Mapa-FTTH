@@ -8,7 +8,6 @@ import {
   Menu,
   X,
   Network,
-  Route,
   Info,
   TestTube,
   Plus,
@@ -158,37 +157,6 @@ function App() {
           )}
 
           {showLegend && <FiberColorLegend />}
-
-          {currentNetwork && (
-            <div className="absolute bottom-4 left-4 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg p-3 shadow-lg">
-              <div className="flex gap-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-blue-500 rounded" />
-                  <span>CEO: {currentNetwork.boxes.filter((b) => b.type === 'CEO').length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-green-500 rounded" />
-                  <span>CTO: {currentNetwork.boxes.filter((b) => b.type === 'CTO').length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-orange-500 rounded-full" />
-                  <span>DIO: {currentNetwork.boxes.filter((b) => b.type === 'DIO').length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Route className="w-3 h-3 text-green-600" />
-                  <span>Cabos: {currentNetwork.cables.length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Route className="w-3 h-3 text-violet-600" />
-                  <span>POPs: {(currentNetwork.pops || []).length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Route className="w-3 h-3 text-green-600" />
-                  <span>Fusoes: {currentNetwork.fusions.length}</span>
-                </div>
-              </div>
-            </div>
-          )}
         </main>
       </div>
 

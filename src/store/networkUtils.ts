@@ -1,5 +1,5 @@
 import type { Fiber, Fusion, Network, Pop, PopFusion, Position, Splitter } from '@/types/ftth';
-import { FIBER_COLORS } from '@/types/ftth';
+import { DEFAULT_CABLE_FIBERS_PER_TUBE, FIBER_COLORS } from '@/types/ftth';
 
 export const generateId = () =>
   Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -7,12 +7,12 @@ export const generateId = () =>
 export const generateFibers = (
   count: number,
   startNumber: number = 1,
-  fibersPerTube: number = 12
+  fibersPerTube: number = DEFAULT_CABLE_FIBERS_PER_TUBE
 ): Fiber[] => {
   const safeFibersPerTube = Math.max(1, fibersPerTube);
   return Array.from({ length: count }, (_, i) => {
     const fiberNum = startNumber + i;
-    const colorIndex = (fiberNum - 1) % 12;
+    const colorIndex = (fiberNum - 1) % FIBER_COLORS.length;
     const localIndex = i;
     const tubeNumber = Math.floor(localIndex / safeFibersPerTube) + 1;
 

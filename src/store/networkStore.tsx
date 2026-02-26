@@ -25,6 +25,7 @@ import type {
   ContinuityTest,
   Client,
 } from '@/types/ftth';
+import { getCableModelsByType, resolveDefaultCableModel } from '@/types/ftth';
 import {
   attachFusionToNetwork,
   calculateDistanceMeters,
@@ -41,7 +42,14 @@ import {
   resolveNextFiberThroughPop,
   getSplitterPortCount,
 } from '@/store/networkUtils';
-import { normalizeCableGeometry } from '@/store/cableUtils';
+import { enforceCableGeometry, normalizeCableGeometry } from '@/store/cableUtils';
+import {
+  getDefaultBoxCapacity,
+  inferCableTypeFromEndpoints,
+  orientCableEndpointsByHierarchy,
+  resolveTopologyEndpointProfile,
+  validateCableTypeForTopology,
+} from '@/types/ftth/rules';
 import {
   applyPopFusionToCables,
   buildPopFusion,
@@ -291,6 +299,164 @@ const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop
     };
   });
 
+const isFiberLockedForResize = (fiber: Fiber): boolean =>
+  Boolean(
+    fiber.fusionId ||
+      fiber.connectedTo ||
+      fiber.status === 'active' ||
+      fiber.status === 'reserved' ||
+      fiber.status === 'faulty'
+  );
+
+const getRequiredFiberCount = (fibers: Fiber[] | undefined): number =>
+  (fibers || []).reduce((max, fiber) => {
+    if (!isFiberLockedForResize(fiber)) return max;
+    return Math.max(max, fiber.number);
+  }, 0);
+
+const resizeCableFibers = (
+  fibers: Fiber[] | undefined,
+  fiberCount: number,
+  fibersPerTube: number
+): Fiber[] => {
+  const targetCount = Math.max(1, fiberCount);
+  const safeFibersPerTube = Math.max(1, fibersPerTube);
+  const preserved = (fibers || []).slice(0, targetCount).map((fiber, index) => ({
+    ...fiber,
+    number: index + 1,
+    tubeNumber: Math.floor(index / safeFibersPerTube) + 1,
+  }));
+
+  if (preserved.length >= targetCount) return preserved;
+
+  const generated = generateFibers(targetCount - preserved.length, preserved.length + 1, safeFibersPerTube);
+  return [...preserved, ...generated];
+};
+
+const resizeBoxFibers = (fibers: Fiber[] | undefined, capacity: number): Fiber[] => {
+  const targetCount = Math.max(1, capacity);
+  const preserved = (fibers || []).slice(0, targetCount).map((fiber, index) => ({
+    ...fiber,
+    number: index + 1,
+  }));
+
+  if (preserved.length >= targetCount) return preserved;
+
+  const generated = generateFibers(targetCount - preserved.length, preserved.length + 1);
+  return [...preserved, ...generated];
+};
+
+const appendObservationNotes = (observations: string | undefined, notes: string[]): string | undefined => {
+  const cleanNotes = notes
+    .map((note) => note.trim())
+    .filter((note) => note.length > 0);
+  if (cleanNotes.length === 0) return observations;
+
+  const existingNotes = (observations || '')
+    .split('\n')
+    .map((note) => note.trim())
+    .filter((note) => note.length > 0);
+  const merged = Array.from(new Set([...existingNotes, ...cleanNotes]));
+  return merged.length > 0 ? merged.join('\n') : undefined;
+};
+
+const resolveValidEndpointId = (network: Network, endpointId: string | undefined): string => {
+  if (!endpointId) return '';
+  const hasBox = network.boxes.some((box) => box.id === endpointId);
+  if (hasBox) return endpointId;
+  const hasPop = (network.pops || []).some((pop) => pop.id === endpointId);
+  return hasPop ? endpointId : '';
+};
+
+interface CableTopologyPlan {
+  startPoint: string;
+  endPoint: string;
+  type: Cable['type'];
+  model: string;
+  blockers: string[];
+  warnings: string[];
+}
+
+const resolveCableTopologyPlan = (
+  network: Network,
+  draft: {
+    startPoint: string;
+    endPoint: string;
+    type: Cable['type'];
+    model?: string;
+  }
+): CableTopologyPlan => {
+  let startPoint = resolveValidEndpointId(network, draft.startPoint);
+  let endPoint = resolveValidEndpointId(network, draft.endPoint);
+
+  if (startPoint && endPoint && startPoint === endPoint) {
+    endPoint = '';
+  }
+
+  const orientation = orientCableEndpointsByHierarchy(
+    startPoint,
+    endPoint,
+    network.boxes,
+    network.pops || []
+  );
+  startPoint = orientation.startPoint;
+  endPoint = orientation.endPoint;
+
+  const startProfile = resolveTopologyEndpointProfile(startPoint, network.boxes, network.pops || []);
+  const endProfile = resolveTopologyEndpointProfile(endPoint, network.boxes, network.pops || []);
+  const inferredType = inferCableTypeFromEndpoints(startProfile, endProfile);
+
+  const initialValidation = validateCableTypeForTopology(draft.type, startProfile, endProfile);
+  const shouldAutoAdjustType = initialValidation.blockers.length > 0;
+  const type = shouldAutoAdjustType ? inferredType : draft.type;
+
+  const validation = validateCableTypeForTopology(type, startProfile, endProfile);
+  const blockers = validation.blockers;
+  const warnings = [
+    ...initialValidation.warnings,
+    ...validation.warnings,
+    ...(orientation.swapped && orientation.reason ? [orientation.reason] : []),
+    ...(shouldAutoAdjustType ? [`Tipo ajustado automaticamente para ${inferredType}.`] : []),
+  ];
+
+  const modelOptions = getCableModelsByType(type);
+  const model = modelOptions.some((option) => option.id === draft.model)
+    ? (draft.model as string)
+    : resolveDefaultCableModel(type);
+
+  return {
+    startPoint,
+    endPoint,
+    type,
+    model,
+    blockers,
+    warnings: Array.from(new Set(warnings)),
+  };
+};
+
+const rebuildBoxCableLinks = (boxes: Box[], cables: Cable[]): Box[] => {
+  const linksByBox = new Map<string, { input: Set<string>; output: Set<string> }>();
+  boxes.forEach((box) => {
+    linksByBox.set(box.id, { input: new Set<string>(), output: new Set<string>() });
+  });
+
+  cables.forEach((cable) => {
+    const startLinks = linksByBox.get(cable.startPoint);
+    if (startLinks) startLinks.output.add(cable.id);
+    const endLinks = linksByBox.get(cable.endPoint);
+    if (endLinks) endLinks.input.add(cable.id);
+  });
+
+  return boxes.map((box) => {
+    const links = linksByBox.get(box.id);
+    return {
+      ...box,
+      inputCables: Array.from(links?.input || []),
+      outputCables: Array.from(links?.output || []),
+    };
+  });
+};
+
 export function NetworkProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<NetworkState>({
     currentNetwork: null,
@@ -418,17 +584,20 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addBox = useCallback((boxData: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => {
+    const requestedCapacity = Number.isFinite(boxData.capacity) ? boxData.capacity : getDefaultBoxCapacity(boxData.type);
+    const safeCapacity = Math.max(1, requestedCapacity);
     const box: Box = {
       ...boxData,
+      capacity: safeCapacity,
       id: generateId(),
-      fibers: generateFibers(boxData.capacity),
+      fibers: generateFibers(safeCapacity),
       inputCables: [],
       outputCables: [],
       fusionLayout: {},
       fusions: [],
     };
 
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
       return {
         ...prev,
@@ -444,15 +613,35 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateBox = useCallback((boxId: string, updates: Partial<Box>) => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
+      const currentBox = prev.currentNetwork.boxes.find((box) => box.id === boxId);
+      if (!currentBox) return prev;
+
+      const nextType = updates.type || currentBox.type;
+      const requestedCapacity =
+        typeof updates.capacity === 'number'
+          ? updates.capacity
+          : currentBox.capacity || getDefaultBoxCapacity(nextType);
+      const minRequiredCapacity = getRequiredFiberCount(currentBox.fibers);
+      const safeRequestedCapacity = Number.isFinite(requestedCapacity)
+        ? requestedCapacity
+        : getDefaultBoxCapacity(nextType);
+      const safeCapacity = Math.max(1, safeRequestedCapacity, minRequiredCapacity);
+      const nextFibers = resizeBoxFibers(currentBox.fibers, safeCapacity);
+      const nextBox: Box = {
+        ...currentBox,
+        ...updates,
+        type: nextType,
+        capacity: safeCapacity,
+        fibers: nextFibers,
+      };
+
       return {
         ...prev,
         currentNetwork: {
           ...prev.currentNetwork,
-          boxes: prev.currentNetwork.boxes.map(box =>
-            box.id === boxId ? { ...box, ...updates } : box
-          ),
+          boxes: prev.currentNetwork.boxes.map((box) => (box.id === boxId ? nextBox : box)),
           updatedAt: new Date().toISOString(),
         },
       };
@@ -460,22 +649,64 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeBox = useCallback((boxId: string) => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
+      const currentNetwork = prev.currentNetwork;
+      const targetBox = currentNetwork.boxes.find((box) => box.id === boxId);
+      if (!targetBox) return prev;
+
+      const cablesToRemove = currentNetwork.cables.filter(
+        (cable) => cable.startPoint === boxId || cable.endPoint === boxId
+      );
+      const cableIdsToRemove = new Set(cablesToRemove.map((cable) => cable.id));
+      const cableFiberIdsToRemove = new Set(
+        cablesToRemove.flatMap((cable) => cable.fibers.map((fiber) => fiber.id))
+      );
+
+      const fusionIdsToDetach = currentNetwork.fusions
+        .filter(
+          (fusion) =>
+            fusion.boxAId === boxId ||
+            fusion.boxBId === boxId ||
+            cableFiberIdsToRemove.has(fusion.fiberAId) ||
+            cableFiberIdsToRemove.has(fusion.fiberBId)
+        )
+        .map((fusion) => fusion.id);
+
+      const detachedNetwork = fusionIdsToDetach.reduce(
+        (acc, fusionId) => detachFusionFromNetwork(acc, fusionId),
+        currentNetwork
+      );
+
+      const nextCables = detachedNetwork.cables
+        .filter((cable) => !cableIdsToRemove.has(cable.id))
+        .map((cable) => ({
+          ...cable,
+          attachments: (cable.attachments || []).filter(
+            (attachment) => !(attachment.kind === 'box' && attachment.entityId === boxId)
+          ),
+        }));
+
+      let nextPops = detachedNetwork.pops || [];
+      cableIdsToRemove.forEach((cableId) => {
+        nextPops = removePopMirrorCablesForNetworkCable(
+          { ...detachedNetwork, pops: nextPops },
+          cableId
+        );
+      });
+
+      const nextBoxes = rebuildBoxCableLinks(
+        detachedNetwork.boxes.filter((box) => box.id !== boxId),
+        nextCables
+      );
+
       return {
         ...prev,
         currentNetwork: {
-          ...prev.currentNetwork,
-          boxes: prev.currentNetwork.boxes.filter(box => box.id !== boxId),
-          cables: prev.currentNetwork.cables.filter(
-            cable => cable.startPoint !== boxId && cable.endPoint !== boxId
-          ).map((cable) => ({
-            ...cable,
-            attachments: (cable.attachments || []).filter((attachment) => !(attachment.kind === 'box' && attachment.entityId === boxId)),
-          })),
-          fusions: prev.currentNetwork.fusions.filter(
-            fusion => fusion.boxAId !== boxId && fusion.boxBId !== boxId
-          ),
+          ...detachedNetwork,
+          boxes: nextBoxes,
+          cables: nextCables,
+          pops: nextPops,
           updatedAt: new Date().toISOString(),
         },
       };
@@ -483,35 +714,62 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCable = useCallback((cableData: Omit<Cable, 'id' | 'fibers'>) => {
-    const geometry = normalizeCableGeometry(
+    const fallbackGeometry = enforceCableGeometry(
       cableData.fiberCount,
       cableData.looseTubeCount,
       cableData.fibersPerTube
     );
-    const cable: Cable = {
+    let createdCable: Cable = {
       ...cableData,
-      fiberCount: geometry.fiberCount,
-      fibersPerTube: geometry.fibersPerTube,
-      looseTubeCount: geometry.looseTubeCount,
-      model: cableData.model || 'AS-80',
       id: generateId(),
-      fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
+      type: cableData.type,
+      model: cableData.model || resolveDefaultCableModel(cableData.type),
+      fiberCount: fallbackGeometry.fiberCount,
+      looseTubeCount: fallbackGeometry.looseTubeCount,
+      fibersPerTube: fallbackGeometry.fibersPerTube,
+      fibers: generateFibers(fallbackGeometry.fiberCount, 1, fallbackGeometry.fibersPerTube),
     };
 
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
-      
-      const updatedCables = [...prev.currentNetwork.cables, cable];
-      const updatedBoxes = prev.currentNetwork.boxes.map(box => {
-        if (box.id === cable.startPoint) {
-          return { ...box, outputCables: [...box.outputCables, cable.id] };
-        }
-        if (box.id === cable.endPoint) {
-          return { ...box, inputCables: [...box.inputCables, cable.id] };
-        }
-        return box;
+
+      const topology = resolveCableTopologyPlan(prev.currentNetwork, {
+        startPoint: cableData.startPoint,
+        endPoint: cableData.endPoint,
+        type: cableData.type,
+        model: cableData.model,
       });
-      const updatedPops = syncPopMirrorCablesForNetworkCable(prev.currentNetwork, cable);
+      const geometry = enforceCableGeometry(
+        cableData.fiberCount,
+        cableData.looseTubeCount,
+        cableData.fibersPerTube
+      );
+      const notes = [
+        ...topology.blockers.map((item) => `[Topologia] ${item}`),
+        ...topology.warnings.map((item) => `[Topologia] ${item}`),
+      ];
+
+      const cable: Cable = {
+        ...cableData,
+        id: generateId(),
+        type: topology.type,
+        model: topology.model,
+        startPoint: topology.startPoint,
+        endPoint: topology.endPoint,
+        fiberCount: geometry.fiberCount,
+        looseTubeCount: geometry.looseTubeCount,
+        fibersPerTube: geometry.fibersPerTube,
+        fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
+        observations: appendObservationNotes(cableData.observations, notes),
+      };
+
+      createdCable = cable;
+      const updatedCables = [...prev.currentNetwork.cables, cable];
+      const updatedBoxes = rebuildBoxCableLinks(prev.currentNetwork.boxes, updatedCables);
+      const updatedPops = syncPopMirrorCablesForNetworkCable(
+        { ...prev.currentNetwork, boxes: updatedBoxes, cables: updatedCables },
+        cable
+      );
 
       return {
         ...prev,
@@ -525,37 +783,61 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       };
     });
 
-    return cable;
+    return createdCable;
   }, []);
 
   const updateCable = useCallback((cableId: string, updates: Partial<Cable>) => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
       const currentCable = prev.currentNetwork.cables.find((cable) => cable.id === cableId);
       if (!currentCable) return prev;
-      const nextCable = { ...currentCable, ...updates };
-      const endpointChanged =
-        currentCable.startPoint !== nextCable.startPoint ||
-        currentCable.endPoint !== nextCable.endPoint;
 
-      const updatedBoxes = endpointChanged
-        ? prev.currentNetwork.boxes.map((box) => {
-            const nextOutput = box.outputCables.filter((id) => id !== cableId);
-            const nextInput = box.inputCables.filter((id) => id !== cableId);
+      const draftStartPoint =
+        typeof updates.startPoint === 'string' ? updates.startPoint : currentCable.startPoint;
+      const draftEndPoint =
+        typeof updates.endPoint === 'string' ? updates.endPoint : currentCable.endPoint;
+      const draftType = updates.type || currentCable.type;
+      const topology = resolveCableTopologyPlan(prev.currentNetwork, {
+        startPoint: draftStartPoint,
+        endPoint: draftEndPoint,
+        type: draftType,
+        model: updates.model || currentCable.model,
+      });
 
-            if (box.id === nextCable.startPoint && !nextOutput.includes(cableId)) {
-              nextOutput.push(cableId);
-            }
-            if (box.id === nextCable.endPoint && !nextInput.includes(cableId)) {
-              nextInput.push(cableId);
-            }
-
-            return { ...box, outputCables: nextOutput, inputCables: nextInput };
-          })
-        : prev.currentNetwork.boxes;
-      const updatedCables = prev.currentNetwork.cables.map((cable) =>
-        cable.id === cableId ? { ...cable, ...updates } : cable
+      const minFiberCount = getRequiredFiberCount(currentCable.fibers);
+      const geometry = enforceCableGeometry(
+        typeof updates.fiberCount === 'number' ? updates.fiberCount : currentCable.fiberCount,
+        typeof updates.looseTubeCount === 'number' ? updates.looseTubeCount : currentCable.looseTubeCount,
+        typeof updates.fibersPerTube === 'number' ? updates.fibersPerTube : currentCable.fibersPerTube,
+        minFiberCount
       );
+      const notes = [
+        ...topology.blockers.map((item) => `[Topologia] ${item}`),
+        ...topology.warnings.map((item) => `[Topologia] ${item}`),
+      ];
+      const baseFibers = updates.fibers || currentCable.fibers;
+
+      const nextCable: Cable = {
+        ...currentCable,
+        ...updates,
+        type: topology.type,
+        model: topology.model,
+        startPoint: topology.startPoint,
+        endPoint: topology.endPoint,
+        fiberCount: geometry.fiberCount,
+        looseTubeCount: geometry.looseTubeCount,
+        fibersPerTube: geometry.fibersPerTube,
+        fibers: resizeCableFibers(baseFibers, geometry.fiberCount, geometry.fibersPerTube),
+        observations: appendObservationNotes(
+          updates.observations ?? currentCable.observations,
+          notes
+        ),
+      };
+
+      const updatedCables = prev.currentNetwork.cables.map((cable) =>
+        cable.id === cableId ? nextCable : cable
+      );
+      const updatedBoxes = rebuildBoxCableLinks(prev.currentNetwork.boxes, updatedCables);
       const updatedPops = syncPopMirrorCablesForNetworkCable(
         { ...prev.currentNetwork, cables: updatedCables, boxes: updatedBoxes },
         nextCable
@@ -575,7 +857,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeCable = useCallback((cableId: string) => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.currentNetwork) return prev;
       const cable = prev.currentNetwork.cables.find((item) => item.id === cableId);
       if (!cable) return prev;
@@ -587,14 +869,11 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         )
         .map((fusion) => fusion.id);
 
+      const nextCables = prev.currentNetwork.cables.filter((item) => item.id !== cableId);
       const withoutCable = {
         ...prev.currentNetwork,
-        cables: prev.currentNetwork.cables.filter((item) => item.id !== cableId),
-        boxes: prev.currentNetwork.boxes.map((box) => ({
-          ...box,
-          inputCables: box.inputCables.filter(id => id !== cableId),
-          outputCables: box.outputCables.filter(id => id !== cableId),
-        })),
+        cables: nextCables,
+        boxes: rebuildBoxCableLinks(prev.currentNetwork.boxes, nextCables),
         pops: removePopMirrorCablesForNetworkCable(prev.currentNetwork, cableId),
       };
 
@@ -1426,6 +1705,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     }
 
     const visited = new Set<string>();
+    const countedFusionIds = new Set<string>();
     const path: string[] = [];
     let attenuation = 0;
     let hopCount = 0;
@@ -1442,8 +1722,11 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       }
 
       if (currentFiber.connectedTo && currentFiber.fusionId) {
-        const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
-        if (fusion) attenuation += getFusionAttenuation(fusion);
+        if (!countedFusionIds.has(currentFiber.fusionId)) {
+          const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
+          if (fusion) attenuation += getFusionAttenuation(fusion);
+          countedFusionIds.add(currentFiber.fusionId);
+        }
         currentFiberId = currentFiber.connectedTo;
         hopCount += 1;
         continue;
@@ -1482,6 +1765,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     }
 
     const visited = new Set<string>();
+    const countedFusionIds = new Set<string>();
     const path: string[] = [];
     let attenuation = 0;
     let fusionCount = 0;
@@ -1536,9 +1820,12 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       }
 
       if (currentFiber.connectedTo && currentFiber.fusionId) {
-        const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
-        if (fusion) attenuation += getFusionAttenuation(fusion);
-        fusionCount += 1;
+        if (!countedFusionIds.has(currentFiber.fusionId)) {
+          const fusion = currentNetwork.fusions.find((item) => item.id === currentFiber.fusionId);
+          if (fusion) attenuation += getFusionAttenuation(fusion);
+          fusionCount += 1;
+          countedFusionIds.add(currentFiber.fusionId);
+        }
         currentFiberId = currentFiber.connectedTo;
         continue;
       }

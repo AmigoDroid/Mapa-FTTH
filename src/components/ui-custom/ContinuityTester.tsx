@@ -289,17 +289,18 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
         if (!nextOpen) clearFiberHighlightOnMap();
       }}
     >
-      <DialogContent className="max-w-4xl max-h-[90vh]">
-        <DialogHeader>
+      <DialogContent className="w-[min(96vw,1200px)] max-w-[1200px] max-h-[90vh] overflow-hidden p-0">
+        <DialogHeader className="px-6 pt-6">
           <DialogTitle className="flex items-center gap-2">
             <Activity className="w-5 h-5 text-blue-500" />
             Teste de Continuidade
           </DialogTitle>
         </DialogHeader>
 
+        <ScrollArea className="max-h-[calc(90vh-88px)] px-6 pb-6">
         <div className="space-y-4">
           {!selectedSource ? (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Card>
                 <CardContent className="p-4">
                   <h4 className="font-semibold mb-3">Selecionar Caixa</h4>
@@ -344,8 +345,8 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
-                <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between bg-gray-50 p-3 rounded-lg">
+                <div className="flex items-center gap-3 min-w-0">
                   {selectedSource.box ? (
                     <>
                       <Zap className="w-5 h-5 text-blue-500" />
@@ -364,7 +365,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                     </>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   {selectedSource.cable && (
                     <Button variant="outline" size="sm" onClick={exportCableDiagnosticsPdf}>
                       <Download className="w-4 h-4 mr-1" />
@@ -489,7 +490,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
 
               {testResults.length > 0 && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <Card>
                       <CardContent className="p-3 text-center">
                         <p className="text-2xl font-bold">{getPassRate()}%</p>
@@ -515,7 +516,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                   </div>
 
                   <ScrollArea className="h-64">
-                    <div className="grid grid-cols-6 gap-2">
+                    <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
                       {testResults.map((result) => (
                         <div
                           key={result.fiberId}
@@ -558,13 +559,15 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
             </div>
           )}
         </div>
+        </ScrollArea>
 
         {showVisualization && selectedResult && (
           <Dialog open={showVisualization} onOpenChange={setShowVisualization}>
-            <DialogContent className="max-w-lg">
-              <DialogHeader>
+            <DialogContent className="w-[min(94vw,680px)] max-w-[680px] max-h-[88vh] overflow-hidden p-0">
+              <DialogHeader className="px-6 pt-6">
                 <DialogTitle>Detalhes do Teste - Fibra {selectedResult.fiberNumber}</DialogTitle>
               </DialogHeader>
+              <ScrollArea className="max-h-[calc(88vh-86px)] px-6 pb-5">
               <div className="space-y-4">
                 <div className="flex items-center gap-3">
                   <div
@@ -656,6 +659,7 @@ export function ContinuityTester({ open, onOpenChange }: ContinuityTesterProps) 
                   </div>
                 )}
               </div>
+              </ScrollArea>
             </DialogContent>
           </Dialog>
         )}

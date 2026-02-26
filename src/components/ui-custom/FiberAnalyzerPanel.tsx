@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
-import type { Cable, Fiber } from '@/types/ftth';
+import type { Fiber } from '@/types/ftth';
+import type { FiberAnalyzerSelectCableDetail } from '@/components/map/types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
@@ -55,11 +56,26 @@ export function FiberAnalyzerPanel({ open, onOpenChange }: FiberAnalyzerPanelPro
   );
 
   useEffect(() => {
+    if (!selectedCableId) return;
+    if (cables.some((cable) => cable.id === selectedCableId)) return;
+    setSelectedCableId('');
+  }, [cables, selectedCableId]);
+
+  useEffect(() => {
     if (!open) return;
-    if (cables.length > 0 && !selectedCableId) {
-      setSelectedCableId(cables[0]!.id);
-    }
-  }, [open, cables, selectedCableId]);
+
+    const handleSelectCable = (event: Event) => {
+      const custom = event as CustomEvent<FiberAnalyzerSelectCableDetail>;
+      const cableId = custom.detail?.cableId;
+      if (!cableId) return;
+      setSelectedCableId(cableId);
+    };
+
+    window.addEventListener('ftth:fiber-analyzer-select-cable', handleSelectCable as EventListener);
+    return () => {
+      window.removeEventListener('ftth:fiber-analyzer-select-cable', handleSelectCable as EventListener);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!selectedCable) return;
@@ -127,65 +143,65 @@ export function FiberAnalyzerPanel({ open, onOpenChange }: FiberAnalyzerPanelPro
       </div>
 
       <div className="p-4 space-y-3 overflow-y-auto">
-        <div>
-          <p className="text-xs text-gray-600 mb-1">Cabo</p>
-          <Select value={selectedCableId || '__none__'} onValueChange={(v) => setSelectedCableId(v === '__none__' ? '' : v)}>
-            <SelectTrigger>
-              <SelectValue placeholder="Selecione um cabo" />
-            </SelectTrigger>
-            <SelectContent>
-              {cables.length === 0 && <SelectItem value="__none__">Sem cabos</SelectItem>}
-              {cables.map((cable: Cable) => (
-                <SelectItem key={cable.id} value={cable.id}>
-                  {cable.name} ({cable.model} | {cable.fiberCount}F)
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="rounded-lg border bg-slate-50 p-3 space-y-2 text-xs">
+          <p className="font-semibold text-slate-700">Selecao de cabo pelo mapa</p>
+          <p className="text-slate-600">Com o painel aberto, clique no tracado de um cabo no mapa para carregar os dados.</p>
+          {selectedCable ? (
+            <div className="rounded border bg-white px-2 py-1 text-slate-700">
+              <p className="font-medium">{selectedCable.name}</p>
+              <p className="text-[11px] text-slate-500">{selectedCable.model || 'N/A'} | {selectedCable.fiberCount}F</p>
+            </div>
+          ) : (
+            <p className="text-amber-700">Nenhum cabo selecionado.</p>
+          )}
         </div>
 
-        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => selectTubeStep(-1)} disabled={tubeNumbers.length <= 1}>
-            <ChevronLeft className="w-4 h-4" />
-          </Button>
-          <Select value={String(selectedTube)} onValueChange={(v) => setSelectedTube(Number.parseInt(v, 10) || 1)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {tubeNumbers.map((tube) => (
-                <SelectItem key={tube} value={String(tube)}>
-                  Tubo loose {tube}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button size="sm" variant="outline" onClick={() => selectTubeStep(1)} disabled={tubeNumbers.length <= 1}>
-            <ChevronRight className="w-4 h-4" />
-          </Button>
-        </div>
+        {selectedCable && (
+          <>
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => selectTubeStep(-1)} disabled={tubeNumbers.length <= 1}>
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              <Select value={String(selectedTube)} onValueChange={(v) => setSelectedTube(Number.parseInt(v, 10) || 1)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {tubeNumbers.map((tube) => (
+                    <SelectItem key={tube} value={String(tube)}>
+                      Tubo loose {tube}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" onClick={() => selectTubeStep(1)} disabled={tubeNumbers.length <= 1}>
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </div>
 
-        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => selectFiberStep(-1)} disabled={fibersInTube.length <= 1}>
-            <ChevronLeft className="w-4 h-4" />
-          </Button>
-          <Select value={selectedFiberId || '__none__'} onValueChange={(v) => setSelectedFiberId(v === '__none__' ? '' : v)}>
-            <SelectTrigger>
-              <SelectValue placeholder="Selecione uma fibra" />
-            </SelectTrigger>
-            <SelectContent>
-              {fibersInTube.length === 0 && <SelectItem value="__none__">Sem fibras no tubo</SelectItem>}
-              {fibersInTube.map((fiber) => (
-                <SelectItem key={fiber.id} value={fiber.id}>
-                  Fibra {fiber.number} - {fiber.color.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button size="sm" variant="outline" onClick={() => selectFiberStep(1)} disabled={fibersInTube.length <= 1}>
-            <ChevronRight className="w-4 h-4" />
-          </Button>
-        </div>
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => selectFiberStep(-1)} disabled={fibersInTube.length <= 1}>
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              <Select value={selectedFiberId || '__none__'} onValueChange={(v) => setSelectedFiberId(v === '__none__' ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione uma fibra" />
+                </SelectTrigger>
+                <SelectContent>
+                  {fibersInTube.length === 0 && <SelectItem value="__none__">Sem fibras no tubo</SelectItem>}
+                  {fibersInTube.map((fiber) => (
+                    <SelectItem key={fiber.id} value={fiber.id}>
+                      Fibra {fiber.number} - {fiber.color.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" onClick={() => selectFiberStep(1)} disabled={fibersInTube.length <= 1}>
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </div>
+          </>
+        )}
 
         {selectedFiber && (
           <div className="rounded-lg border p-3 text-sm">

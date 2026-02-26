@@ -10,7 +10,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Activity, Link2, Unlink, Zap, Save, Trash2, User, MapPin, Calendar, Settings, CheckCircle2, XCircle, Edit3, Plus, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react';
-import { CABLE_MODEL_OPTIONS, type Fiber, type Box, type Splitter } from '@/types/ftth';
+import {
+  DEFAULT_CABLE_FIBER_COUNT,
+  DEFAULT_CABLE_FIBERS_PER_TUBE,
+  DEFAULT_CABLE_LOOSE_TUBE_COUNT,
+  DEFAULT_CABLE_TYPE,
+  getCableModelsByType,
+  resolveDefaultCableModel,
+  type Fiber,
+  type Box,
+  type Cable,
+  type Splitter,
+} from '@/types/ftth';
 import { toast } from 'sonner';
 import { FusionBoardCanvas } from './box-detail/FusionBoardCanvas';
 import type { DragState, EndpointOption, EntityPosition } from './box-detail/types';
@@ -114,16 +125,16 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
   const [showAddCableDialog, setShowAddCableDialog] = useState(false);
   const [newCableName, setNewCableName] = useState('');
   const [newCableTargetBox, setNewCableTargetBox] = useState('');
-  const [newCableFiberCount, setNewCableFiberCount] = useState(12);
-  const [newCableType, setNewCableType] = useState<'drop' | 'distribution' | 'feeder' | 'backbone'>('distribution');
-  const [newCableModel, setNewCableModel] = useState('AS-80');
-  const [newCableLooseTubeCount, setNewCableLooseTubeCount] = useState(1);
-  const [newCableFibersPerTube, setNewCableFibersPerTube] = useState(12);
+  const [newCableFiberCount, setNewCableFiberCount] = useState(DEFAULT_CABLE_FIBER_COUNT);
+  const [newCableType, setNewCableType] = useState<Cable['type']>(DEFAULT_CABLE_TYPE);
+  const [newCableModel, setNewCableModel] = useState(() => resolveDefaultCableModel(DEFAULT_CABLE_TYPE));
+  const [newCableLooseTubeCount, setNewCableLooseTubeCount] = useState(DEFAULT_CABLE_LOOSE_TUBE_COUNT);
+  const [newCableFibersPerTube, setNewCableFibersPerTube] = useState(DEFAULT_CABLE_FIBERS_PER_TUBE);
   const [selectedLooseCableId, setSelectedLooseCableId] = useState('');
   const layoutInitKeyRef = useRef<string>('');
 
   const maxNewCableFiberCapacity = Math.max(1, newCableLooseTubeCount * newCableFibersPerTube);
-  const availableNewCableModels = CABLE_MODEL_OPTIONS.filter((model) => model.category === newCableType);
+  const availableNewCableModels = getCableModelsByType(newCableType);
 
   const localConnections = useMemo(
     () => (currentBox.fusions || []).filter((fusion) => fusion.boxAId === currentBox.id && fusion.boxBId === currentBox.id),
@@ -790,11 +801,11 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     setShowAddCableDialog(false);
     setNewCableName('');
     setNewCableTargetBox('');
-    setNewCableFiberCount(12);
-    setNewCableType('distribution');
-    setNewCableModel('AS-80');
-    setNewCableLooseTubeCount(1);
-    setNewCableFibersPerTube(12);
+    setNewCableFiberCount(DEFAULT_CABLE_FIBER_COUNT);
+    setNewCableType(DEFAULT_CABLE_TYPE);
+    setNewCableModel(resolveDefaultCableModel(DEFAULT_CABLE_TYPE));
+    setNewCableLooseTubeCount(DEFAULT_CABLE_LOOSE_TUBE_COUNT);
+    setNewCableFibersPerTube(DEFAULT_CABLE_FIBERS_PER_TUBE);
   };
 
   const handleUndoLastFusion = () => {
@@ -1518,7 +1529,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
                 </div>
                 <div>
                   <Label>Tipo de Cabo</Label>
-                  <Select value={newCableType} onValueChange={(v: 'drop' | 'distribution' | 'feeder' | 'backbone') => setNewCableType(v)}>
+                  <Select value={newCableType} onValueChange={(v: Cable['type']) => setNewCableType(v)}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>

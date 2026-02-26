@@ -20,7 +20,14 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react';
-import { CABLE_MODEL_OPTIONS, type Cable, type Fiber } from '@/types/ftth';
+import {
+  DEFAULT_CABLE_FIBERS_PER_TUBE,
+  DEFAULT_CABLE_LOOSE_TUBE_COUNT,
+  getCableModelsByType,
+  resolveDefaultCableModel,
+  type Cable,
+  type Fiber,
+} from '@/types/ftth';
 
 interface CableDetailProps {
   cable: Cable;
@@ -41,9 +48,13 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
   const [editingCable, setEditingCable] = useState(false);
   const [cableName, setCableName] = useState(cable.name);
   const [cableStatus, setCableStatus] = useState(cable.status);
-  const [cableModel, setCableModel] = useState(cable.model || 'AS-80');
-  const [cableLooseTubeCount, setCableLooseTubeCount] = useState(cable.looseTubeCount || 1);
-  const [cableFibersPerTube, setCableFibersPerTube] = useState(cable.fibersPerTube || 12);
+  const [cableModel, setCableModel] = useState(cable.model || resolveDefaultCableModel(cable.type));
+  const [cableLooseTubeCount, setCableLooseTubeCount] = useState(
+    cable.looseTubeCount || DEFAULT_CABLE_LOOSE_TUBE_COUNT
+  );
+  const [cableFibersPerTube, setCableFibersPerTube] = useState(
+    cable.fibersPerTube || DEFAULT_CABLE_FIBERS_PER_TUBE
+  );
   const [cableStartBoxId, setCableStartBoxId] = useState(cable.startPoint || '');
   const [cableEndBoxId, setCableEndBoxId] = useState(cable.endPoint || '');
   const [testResults, setTestResults] = useState<Map<string, 'pass' | 'fail'>>(new Map());
@@ -51,19 +62,30 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
 
   const startBox = currentNetwork?.boxes.find((b: any) => b.id === currentCable.startPoint);
   const endBox = currentNetwork?.boxes.find((b: any) => b.id === currentCable.endPoint);
-  const availableModels = CABLE_MODEL_OPTIONS.filter((item) => item.category === currentCable.type);
+  const availableModels = getCableModelsByType(currentCable.type);
   const maxFiberCapacity = Math.max(1, cableLooseTubeCount * cableFibersPerTube);
 
   useEffect(() => {
     if (!open) return;
     setCableName(cable.name);
     setCableStatus(cable.status);
-    setCableModel(cable.model || 'AS-80');
-    setCableLooseTubeCount(cable.looseTubeCount || 1);
-    setCableFibersPerTube(cable.fibersPerTube || 12);
+    setCableModel(cable.model || resolveDefaultCableModel(cable.type));
+    setCableLooseTubeCount(cable.looseTubeCount || DEFAULT_CABLE_LOOSE_TUBE_COUNT);
+    setCableFibersPerTube(cable.fibersPerTube || DEFAULT_CABLE_FIBERS_PER_TUBE);
     setCableStartBoxId(cable.startPoint || '');
     setCableEndBoxId(cable.endPoint || '');
-  }, [open, cable.id, cable.name, cable.status, cable.model, cable.looseTubeCount, cable.fibersPerTube, cable.startPoint, cable.endPoint]);
+  }, [
+    open,
+    cable.id,
+    cable.name,
+    cable.status,
+    cable.type,
+    cable.model,
+    cable.looseTubeCount,
+    cable.fibersPerTube,
+    cable.startPoint,
+    cable.endPoint,
+  ]);
 
   const calculateCableLength = (waypoints: Array<{ lat: number; lng: number }>, start?: { lat: number; lng: number }, end?: { lat: number; lng: number }) => {
     const points = [

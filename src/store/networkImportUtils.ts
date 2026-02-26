@@ -9,6 +9,7 @@ import type {
   PopRouterInterface,
   PopSwitchPort,
 } from '@/types/ftth';
+import { resolveDefaultCableModel } from '@/types/ftth';
 import { normalizeCableGeometry, normalizeFiberTubeNumbers } from '@/store/cableUtils';
 import { generateId } from '@/store/networkUtils';
 
@@ -68,7 +69,7 @@ const normalizeNetworkCable = (cable: Cable): Cable => {
 
   return {
     ...cable,
-    model: cable.model || 'AS-80',
+    model: cable.model || resolveDefaultCableModel(cable.type),
     fiberCount: geometry.fiberCount,
     looseTubeCount: geometry.looseTubeCount,
     fibersPerTube: geometry.fibersPerTube,

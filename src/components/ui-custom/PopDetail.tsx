@@ -10,9 +10,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Pencil, Scissors, Trash2, X } from 'lucide-react';
 import { FullscreenModalShell } from './FullscreenModalShell';
-import { CABLE_MODEL_OPTIONS, FIBER_COLORS } from '@/types/ftth';
+import {
+  DEFAULT_CABLE_FIBER_COUNT,
+  DEFAULT_CABLE_FIBERS_PER_TUBE,
+  DEFAULT_CABLE_LOOSE_TUBE_COUNT,
+  DEFAULT_CABLE_TYPE,
+  FIBER_COLORS,
+  getCableModelsByType,
+  resolveDefaultCableModel,
+} from '@/types/ftth';
 import type { Cable, Pop, PopFusion } from '@/types/ftth';
 import { toast } from 'sonner';
+import { calculateDistanceMeters } from '@/store/networkUtils';
 
 interface PopDetailProps {
   pop: Pop;
@@ -73,6 +82,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const {
     currentNetwork,
     updatePop,
+    updateCable,
     addDioToPop,
     addOltToPop,
     addSlotToOlt,
@@ -129,7 +139,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [routerLanCount, setRouterLanCount] = useState(8);
 
   const [cableName, setCableName] = useState('');
-  const [cableFiberCount, setCableFiberCount] = useState(12);
+  const [cableFiberCount, setCableFiberCount] = useState(DEFAULT_CABLE_FIBER_COUNT);
   const [mapCableDirection, setMapCableDirection] = useState<'outgoing' | 'incoming'>('outgoing');
   const [editPositionLat, setEditPositionLat] = useState(() => pop.position.lat.toFixed(6));
   const [editPositionLng, setEditPositionLng] = useState(() => pop.position.lng.toFixed(6));
@@ -140,10 +150,10 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [dioFusionOpen, setDioFusionOpen] = useState(false);
   const [dioFusionTargetId, setDioFusionTargetId] = useState('');
   const [mapCableTargetId, setMapCableTargetId] = useState('');
-  const [mapCableType, setMapCableType] = useState<Cable['type']>('distribution');
-  const [mapCableModel, setMapCableModel] = useState('AS-80');
-  const [mapCableLooseTubeCount, setMapCableLooseTubeCount] = useState(1);
-  const [mapCableFibersPerTube, setMapCableFibersPerTube] = useState(12);
+  const [mapCableType, setMapCableType] = useState<Cable['type']>(DEFAULT_CABLE_TYPE);
+  const [mapCableModel, setMapCableModel] = useState(() => resolveDefaultCableModel(DEFAULT_CABLE_TYPE));
+  const [mapCableLooseTubeCount, setMapCableLooseTubeCount] = useState(DEFAULT_CABLE_LOOSE_TUBE_COUNT);
+  const [mapCableFibersPerTube, setMapCableFibersPerTube] = useState(DEFAULT_CABLE_FIBERS_PER_TUBE);
 
   const [fusionType, setFusionType] = useState<PopFusion['fusionType']>('fusion');
   const [noLoss, setNoLoss] = useState(false);
@@ -161,6 +171,14 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const endpointRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const nodePositionsRef = useRef<Record<string, { x: number; y: number }>>({});
 
+  const rackScopeDioCableOptions = useMemo(
+    () =>
+      currentPop.cables.filter(
+        (cable) => cable.type === 'bigtail' || Boolean(cable.linkedNetworkCableId)
+      ),
+    [currentPop.cables]
+  );
+
   const entityOptions = useMemo<PopEntity[]>(() => {
     return [
       ...currentPop.dios.map((dio) => ({ id: `dio:${dio.id}`, type: 'dio' as const, label: dio.name })),
@@ -170,6 +188,16 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       ...currentPop.cables.map((cable) => ({ id: `cable:${cable.id}`, type: 'cable' as const, label: cable.name })),
     ];
   }, [currentPop]);
+  const rackScopeAllEntityOptions = useMemo<PopEntity[]>(
+    () =>
+      entityOptions.filter((entity) => {
+        if (entity.type !== 'cable') return true;
+        const cableId = entity.id.replace('cable:', '');
+        const cable = currentPop.cables.find((item) => item.id === cableId);
+        return !cable?.linkedNetworkCableId;
+      }),
+    [entityOptions, currentPop.cables]
+  );
 
   const endpoints = useMemo<EndpointNode[]>(() => {
     const items: EndpointNode[] = [];
@@ -317,18 +345,23 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, {}), [endpoints]);
 
   const rackEntityOptions = useMemo<PopEntity[]>(() => {
-    if (rackFusionScope !== 'dio-bigtail') return entityOptions;
+    if (rackFusionScope !== 'dio-bigtail') return rackScopeAllEntityOptions;
     const allowed = new Set<string>();
     if (rackFusionDioId) {
       allowed.add(`dio:${rackFusionDioId}`);
     } else {
       currentPop.dios.forEach((dio) => allowed.add(`dio:${dio.id}`));
     }
-    currentPop.cables
-      .filter((cable) => cable.type === 'bigtail')
-      .forEach((cable) => allowed.add(`cable:${cable.id}`));
+    rackScopeDioCableOptions.forEach((cable) => allowed.add(`cable:${cable.id}`));
     return entityOptions.filter((entity) => allowed.has(entity.id));
-  }, [rackFusionScope, rackFusionDioId, currentPop.dios, currentPop.cables, entityOptions]);
+  }, [
+    rackFusionScope,
+    rackFusionDioId,
+    currentPop.dios,
+    rackScopeDioCableOptions,
+    rackScopeAllEntityOptions,
+    entityOptions,
+  ]);
 
   const rackEndpointsByEntity = useMemo(() => {
     const allowed = new Set(rackEntityOptions.map((entity) => entity.id));
@@ -346,10 +379,9 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, [rackEndpointsByEntity]);
 
   const rackFusions = useMemo(() => {
-    if (rackFusionScope !== 'dio-bigtail') return currentPop.fusions;
     const visible = new Set(Object.keys(rackEndpointById));
     return currentPop.fusions.filter((fusion) => visible.has(fusion.endpointAId) && visible.has(fusion.endpointBId));
-  }, [rackFusionScope, currentPop.fusions, rackEndpointById]);
+  }, [currentPop.fusions, rackEndpointById]);
 
   const dioFusionEntityOptions = useMemo<PopEntity[]>(() => {
     if (!dioFusionTargetId) return [];
@@ -405,7 +437,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
 
   const estimatedRxDbm = avgTxDbm - totalFusionLoss;
   const mapCableModelOptions = useMemo(
-    () => CABLE_MODEL_OPTIONS.filter((item) => item.category === mapCableType),
+    () => getCableModelsByType(mapCableType),
     [mapCableType]
   );
   const mapCableCapacity = Math.max(1, mapCableLooseTubeCount * mapCableFibersPerTube);
@@ -923,6 +955,42 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
 
   const mapEndpointRequired = mapCableDirection === 'incoming';
 
+  const resolveMapEntityPosition = useCallback(
+    (entityId: string) => {
+      if (!entityId) return null;
+      const box = (currentNetwork?.boxes || []).find((item) => item.id === entityId);
+      if (box) return box.position;
+      const targetPop = (currentNetwork?.pops || []).find((item) => item.id === entityId);
+      if (targetPop) return targetPop.position;
+      return null;
+    },
+    [currentNetwork?.boxes, currentNetwork?.pops]
+  );
+
+  const isCablePathCompatibleWithEndpoints = useCallback(
+    (cable: Cable, startPointId: string, endPointId: string) => {
+      const startPointPosition = resolveMapEntityPosition(startPointId);
+      const endPointPosition = resolveMapEntityPosition(endPointId);
+      if (!startPointPosition || !endPointPosition) return false;
+      if (!cable.path || cable.path.length < 2) return false;
+
+      const first = cable.path[0]!;
+      const last = cable.path[cable.path.length - 1]!;
+      const thresholdMeters = 90;
+
+      const direct =
+        calculateDistanceMeters(first, startPointPosition) <= thresholdMeters &&
+        calculateDistanceMeters(last, endPointPosition) <= thresholdMeters;
+      if (direct) return true;
+
+      const reverse =
+        calculateDistanceMeters(first, endPointPosition) <= thresholdMeters &&
+        calculateDistanceMeters(last, startPointPosition) <= thresholdMeters;
+      return reverse;
+    },
+    [resolveMapEntityPosition]
+  );
+
   const handleLaunchMapCable = useCallback(() => {
     const trimmedName = cableName.trim();
     if (!trimmedName) return;
@@ -934,6 +1002,46 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     const startPoint = mapCableDirection === 'incoming' ? mapCableTargetId : currentPop.id;
     const endPoint = mapCableDirection === 'incoming' ? currentPop.id : mapCableTargetId;
     const fiberCount = Math.max(1, Math.min(cableFiberCount, mapCableCapacity));
+    const normalizedName = trimmedName.toLowerCase();
+    const existingByEndpoint =
+      (currentNetwork?.cables || []).find((cable) => {
+        if (!cable.startPoint || !cable.endPoint) return false;
+        const sameDirection = cable.startPoint === startPoint && cable.endPoint === endPoint;
+        const oppositeDirection = cable.startPoint === endPoint && cable.endPoint === startPoint;
+        if (!sameDirection && !oppositeDirection) return false;
+        return cable.name.trim().toLowerCase() === normalizedName;
+      }) || null;
+    const existingByPath =
+      existingByEndpoint ||
+      (currentNetwork?.cables || []).find((cable) => {
+        const hasEndpoints = Boolean(cable.startPoint || cable.endPoint);
+        if (hasEndpoints) return false;
+        if (cable.name.trim().toLowerCase() !== normalizedName) return false;
+        return isCablePathCompatibleWithEndpoints(cable, startPoint, endPoint);
+      }) ||
+      null;
+    const reusableCable = existingByEndpoint || existingByPath;
+
+    if (reusableCable) {
+      updateCable(reusableCable.id, {
+        name: trimmedName,
+        type: mapCableType,
+        model: mapCableModel,
+        fiberCount,
+        looseTubeCount: mapCableLooseTubeCount,
+        fibersPerTube: mapCableFibersPerTube,
+        startPoint,
+        endPoint,
+      });
+
+      toast.success('Cabo existente reaproveitado automaticamente. Nao foi preciso redesenhar.');
+      onOpenChange(false);
+      setCableName('');
+      setCableFiberCount(Math.min(12, mapCableCapacity));
+      setMapCableTargetId('');
+      setMapCableDirection('outgoing');
+      return;
+    }
 
     onOpenChange(false);
     window.setTimeout(() => {
@@ -975,8 +1083,11 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     mapCableTargetId,
     mapCableType,
     mapEndpointRequired,
+    currentNetwork?.cables,
+    isCablePathCompatibleWithEndpoints,
     onOpenChange,
     selectedMapCableTarget?.kind,
+    updateCable,
   ]);
 
   const handleSavePopPosition = useCallback(() => {
@@ -1245,9 +1356,9 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     </div>
                   )}
                 </div>
-                {rackFusionScope === 'dio-bigtail' && currentPop.cables.filter((cable) => cable.type === 'bigtail').length === 0 && (
+                {rackFusionScope === 'dio-bigtail' && rackScopeDioCableOptions.length === 0 && (
                   <p className="text-xs text-amber-700 mt-2">
-                    Nenhum cabo bigtail cadastrado. Cadastre um cabo tipo bigtail para fusionar no DIO.
+                    Nenhum cabo bigtail ou cabo de mapa vinculado encontrado para fusionar no DIO.
                   </p>
                 )}
               </div>
