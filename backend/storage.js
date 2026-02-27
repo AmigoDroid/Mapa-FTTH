@@ -5,7 +5,9 @@ import { LICENSE_FEATURES } from './constants.js';
 import { createDefaultRoles } from './rbac.js';
 import { hashPassword } from './security.js';
 
-const DATA_DIRECTORY = path.resolve(process.cwd(), 'backend', 'data');
+const DATA_DIRECTORY = process.env.VERCEL
+  ? path.resolve('/tmp', 'ftth-data')
+  : path.resolve(process.cwd(), 'backend', 'data');
 const DATA_FILE = path.join(DATA_DIRECTORY, 'db.json');
 let writeQueue = Promise.resolve();
 
