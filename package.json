@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "api:dev": "node --watch backend/server.js",
-    "api:start": "node backend/server.js",
+    "api:install": "npm --prefix backend install",
+    "api:dev": "npm --prefix backend run dev",
+    "api:start": "npm --prefix backend run start",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

@@ -1,50 +1,42 @@
-# FABREU FTTH Doc
+# FABREU FTTH
 
-Plataforma FTTH multi-tenant com dois portais:
+Plataforma FTTH multi-tenant com frontend e backend separados.
 
-- Portal do provedor (`/`): gestor do provedor gerencia usuarios, permissoes e projetos do proprio ambiente.
-- Portal global (`/system`): administrador total gerencia provedores e licencas.
+- Frontend (Vite): portal do provedor (`/`) e portal global (`/system`).
+- Backend (Node/Express): API em `/api` com JWT, RBAC, licenciamento e multi-provedor.
 
 ## Arquitetura
 
-### 1) Portal Provedor
-- Login por `providerSlug + usuario + senha`
-- Ambiente isolado por provedor (usuarios, roles, projetos, auditoria e licenca)
-- Gestor pode:
-  - criar/editar/remover usuarios do seu provedor
-  - ajustar permissoes por perfil no seu provedor
-  - operar projetos FTTH no seu workspace
+### Frontend
+- Rota provedor: `/`
+- Rota admin global: `/system`
+- URL da API via `VITE_API_BASE_URL`
 
-### 2) Portal Global
-- Rota especial: `/system`
-- Login do admin global separado do login de provedor
-- Pode:
-  - cadastrar provedores
-  - autorizar/revogar provedores
-  - editar/remover provedores
-  - criar/editar/revogar licencas de cada provedor
-  - auditar eventos globais
+### Backend
+- API base: `/api`
+- Login provedor: `POST /api/auth/login`
+- Login admin global: `POST /api/system/auth/login`
+- Health: `GET /api/health`
 
-## Seguranca do Login Global
+## Desenvolvimento local
 
-Credenciais do admin global ficam em arquivo separado:
-
-- `backend/config/system-admin.js`
-
-Voce pode sobrescrever por variaveis de ambiente:
-- `SYSTEM_ADMIN_USERNAME`
-- `SYSTEM_ADMIN_DISPLAY_NAME`
-- `SYSTEM_ADMIN_PASSWORD` (simples/dev)
-- `SYSTEM_ADMIN_PASSWORD_HASH` (recomendado)
-
-## Execucao
+1. Instale frontend e backend:
 
 ```bash
 npm install
-npm run api:dev
+npm run api:install
 ```
 
-Em outro terminal:
+2. Configure envs:
+
+- Frontend: copie `.env.example` para `.env`
+- Backend: copie `backend/.env.example` para `backend/.env`
+
+3. Rode em 2 terminais:
+
+```bash
+npm run api:dev
+```
 
 ```bash
 npm run dev
@@ -52,40 +44,30 @@ npm run dev
 
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:4000/api`
-- Portal global: `http://localhost:5173/system`
 
-## Credenciais iniciais
+## Deploy recomendado
 
-### Provedor
-- Nao existe mais criacao automatica de provedor demo.
-- Primeiro acesse `/system` e cadastre o provedor com o gestor inicial.
-- Se voce vier de base antiga, o provedor migrado permanece no banco.
+1. Deploy da API em serviço próprio (Render/Railway/Fly/etc.)
+2. Configure envs da API (`API_JWT_SECRET`, `SYSTEM_ADMIN_*`, `API_CORS_ORIGIN`, etc.)
+3. Deploy do frontend na Vercel
+4. No frontend da Vercel, defina:
 
-### Admin global
-- Usuario default: `masteradmin`
-- Senha default correspondente ao hash em `backend/config/system-admin.js`
+```bash
+VITE_API_BASE_URL=https://SEU-BACKEND/api
+```
 
-## Scripts
+5. Redeploy do frontend
 
-- `npm run dev`: frontend Vite
-- `npm run api:dev`: backend com watch
+## Scripts (root)
+
+- `npm run dev`: frontend
+- `npm run api:install`: instala dependencias do backend
+- `npm run api:dev`: backend em watch (app separada)
 - `npm run api:start`: backend sem watch
-- `npm run build`: TypeScript + build frontend
-- `npm run test`: testes unitarios
-- `npm run lint`: ESLint
+- `npm run build`: build frontend
 
-## Banco local
+## Persistencia de dados
 
-- Arquivo: `backend/data/db.json`
-- Suporta migracao automatica de schema antigo para o novo multi-tenant.
-
-## Deploy em producao (Vercel + API externa)
-
-A Vercel deste projeto publica o frontend. A API Node/Express deve rodar em um backend separado (ex.: Render/Railway).
-
-1. Publique a API com `npm run api:start`.
-2. Garanta que o backend responda `GET /api/health`.
-3. No frontend da Vercel, configure `VITE_API_BASE_URL=https://SEU-BACKEND/api`.
-4. Redeploy da Vercel.
-
-Se `https://SEU-FRONTEND.vercel.app/api/system/auth/login` retornar `404 NOT_FOUND`, isso significa que nao existe API nesse dominio e o `VITE_API_BASE_URL` precisa apontar para seu backend.
+- Em dev: `backend/data/db.json`
+- Em ambiente Vercel, filesystem e efemero (`/tmp`).
+- Para producao real (licenciamento), use banco externo.

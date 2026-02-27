@@ -1,13 +1,17 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { LICENSE_FEATURES } from './constants.js';
 import { createDefaultRoles } from './rbac.js';
 import { hashPassword } from './security.js';
 
-const DATA_DIRECTORY = process.env.VERCEL
-  ? path.resolve('/tmp', 'ftth-data')
-  : path.resolve(process.cwd(), 'backend', 'data');
+const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIRECTORY = process.env.FTTH_DATA_DIR
+  ? path.resolve(process.env.FTTH_DATA_DIR)
+  : process.env.VERCEL
+    ? path.resolve('/tmp', 'ftth-data')
+    : path.resolve(MODULE_DIRECTORY, 'data');
 const DATA_FILE = path.join(DATA_DIRECTORY, 'db.json');
 let writeQueue = Promise.resolve();
 

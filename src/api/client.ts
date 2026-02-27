@@ -1,8 +1,10 @@
-const defaultApiBaseUrl = import.meta.env.DEV
-  ? 'http://localhost:4000/api'
-  : `${typeof window !== 'undefined' ? window.location.origin : ''}/api`;
+const configuredApiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').trim();
+const defaultDevApiBaseUrl = 'http://localhost:4000/api';
+const API_BASE_URL = (configuredApiBaseUrl || (import.meta.env.DEV ? defaultDevApiBaseUrl : '')).replace(/\/+$/, '');
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl).replace(/\/+$/, '');
+if (!API_BASE_URL && !import.meta.env.DEV) {
+  console.error('VITE_API_BASE_URL nao configurada para producao. Defina a URL da API externa.');
+}
 
 let accessToken: string | null = null;
 
@@ -28,6 +30,10 @@ interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
 }
 
 export const apiRequest = async <T>(path: string, options: ApiRequestOptions = {}): Promise<T> => {
+  if (!API_BASE_URL) {
+    throw new Error('VITE_API_BASE_URL nao configurada. Defina a URL da API no frontend em producao.');
+  }
+
   const { body, auth = true, headers, ...rest } = options;
   const requestHeaders = new Headers(headers || {});
   requestHeaders.set('Content-Type', 'application/json');
