@@ -1,4 +1,8 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+const defaultApiBaseUrl = import.meta.env.DEV
+  ? 'http://localhost:4000/api'
+  : `${typeof window !== 'undefined' ? window.location.origin : ''}/api`;
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl).replace(/\/+$/, '');
 
 let accessToken: string | null = null;
 

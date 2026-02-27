@@ -8,7 +8,7 @@
       "slug": "fabreu-telecom",
       "status": "active",
       "createdAt": "2026-02-26T23:44:53.940Z",
-      "updatedAt": "2026-02-26T23:44:53.940Z",
+      "updatedAt": "2026-02-27T00:13:54.340Z",
       "license": {
         "id": "lic-2072989f",
         "key": "FTTH-2072989F",
@@ -96,8 +96,59 @@
           "updatedAt": "2026-02-26T23:44:53.940Z"
         }
       ],
-      "projects": [],
+      "projects": [
+        {
+          "id": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
+          "name": "fabreu",
+          "network": {
+            "id": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
+            "name": "fabreu",
+            "cities": [],
+            "pops": [],
+            "boxes": [],
+            "reserves": [],
+            "cables": [],
+            "fusions": [],
+            "createdAt": "2026-02-27T00:13:50.373Z",
+            "updatedAt": "2026-02-27T00:13:54.333Z"
+          },
+          "createdAt": "2026-02-27T00:13:50.371Z",
+          "updatedAt": "2026-02-27T00:13:54.333Z",
+          "createdBy": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "updatedBy": "5a1da4b4-5e3d-4664-abf3-1a99ae982195"
+        }
+      ],
       "auditLogs": [
+        {
+          "id": "eaf00af2-039e-4978-a2fa-e21227455229",
+          "createdAt": "2026-02-27T00:13:54.340Z",
+          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
+          "details": "Projeto fabreu atualizado."
+        },
+        {
+          "id": "b40de2ec-694c-4558-a593-ea09c726199c",
+          "createdAt": "2026-02-27T00:13:50.378Z",
+          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "actorUsername": "wandson",
+          "action": "projects.create",
+          "targetType": "project",
+          "targetId": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
+          "details": "Projeto fabreu criado."
+        },
+        {
+          "id": "98140fe2-77a4-4435-a0f6-b20f1b2d56e0",
+          "createdAt": "2026-02-27T00:13:26.148Z",
+          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "actorUsername": "wandson",
+          "action": "auth.login",
+          "targetType": "session",
+          "targetId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "details": "Login do provedor realizado com sucesso."
+        },
         {
           "id": "e6e40371-3fed-4708-a5f6-572cd9eeba14",
           "createdAt": "2026-02-26T23:48:20.199Z",
