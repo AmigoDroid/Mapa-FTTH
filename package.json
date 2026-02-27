@@ -8,6 +8,7 @@
     "api:install": "npm --prefix backend install",
     "api:dev": "npm --prefix backend run dev",
     "api:start": "npm --prefix backend run start",
+    "start": "npm run api:start",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
