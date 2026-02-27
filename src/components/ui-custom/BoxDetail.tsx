@@ -783,7 +783,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
     const targetBox = currentNetwork.boxes.find((b) => b.id === newCableTargetBox);
     if (!targetBox) return;
 
-    addCable({
+    const created = addCable({
       name: newCableName.trim() || `Cabo ${currentBox.name} -> ${targetBox.name}`,
       type: newCableType,
       model: newCableModel,
@@ -797,6 +797,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       status: 'active',
       color: '#00AA00',
     });
+    if (!created) return;
 
     setShowAddCableDialog(false);
     setNewCableName('');
@@ -862,6 +863,7 @@ export function BoxDetail({ box, open, onOpenChange }: BoxDetailProps) {
       technician: 'Sistema',
       observations: `BOX:${currentBox.id};FIBER:${fiber.id};PATH:${continuity.path.join(' > ') || 'N/A'}`,
     });
+    if (!savedTest) return;
 
     setContinuityTestResult({
       fiberId: fiber.id,

@@ -1,64 +1,80 @@
 # FABREU FTTH Doc
 
-Aplicacao React + Vite para geodocumentacao de redes FTTH com foco em operacao de campo: caixas, POPs, cabos, reservas, fusoes e continuidade.
+Plataforma FTTH multi-tenant com dois portais:
 
-## Objetivo
-- Modelar rede FTTH no mapa (Leaflet).
-- Registrar topologia (caixas, cabos, POPs e fusoes).
-- Permitir validacao basica de continuidade e estimativa de perdas.
-- Exportar e importar rede em JSON.
+- Portal do provedor (`/`): gestor do provedor gerencia usuarios, permissoes e projetos do proprio ambiente.
+- Portal global (`/system`): administrador total gerencia provedores e licencas.
 
-## Stack
-- React 18 + TypeScript
-- Vite
-- Tailwind + componentes UI (Radix)
-- Leaflet
-- Estado global via contexto (`src/store/networkStore.tsx`)
+## Arquitetura
 
-## Estrutura principal
-- `src/components/map/NetworkMap.tsx`: mapa, desenho de cabos, criacao de caixas/POPs/reservas.
-- `src/components/ui-custom/NetworkPanel.tsx`: painel lateral, explorer e import/export.
-- `src/components/ui-custom/BoxDetail.tsx`: detalhes e fusoes de caixa.
-- `src/components/ui-custom/PopDetail.tsx`: detalhes de POP (DIO/OLT/Switch/Router/fusoes).
-- `src/store/networkStore.tsx`: regras de negocio e mutacoes da rede.
-- `src/types/ftth.ts`: tipagem de dominio FTTH.
+### 1) Portal Provedor
+- Login por `providerSlug + usuario + senha`
+- Ambiente isolado por provedor (usuarios, roles, projetos, auditoria e licenca)
+- Gestor pode:
+  - criar/editar/remover usuarios do seu provedor
+  - ajustar permissoes por perfil no seu provedor
+  - operar projetos FTTH no seu workspace
 
-## Como executar
+### 2) Portal Global
+- Rota especial: `/system`
+- Login do admin global separado do login de provedor
+- Pode:
+  - cadastrar provedores
+  - autorizar/revogar provedores
+  - editar/remover provedores
+  - criar/editar/revogar licencas de cada provedor
+  - auditar eventos globais
+
+## Seguranca do Login Global
+
+Credenciais do admin global ficam em arquivo separado:
+
+- `backend/config/system-admin.js`
+
+Voce pode sobrescrever por variaveis de ambiente:
+- `SYSTEM_ADMIN_USERNAME`
+- `SYSTEM_ADMIN_DISPLAY_NAME`
+- `SYSTEM_ADMIN_PASSWORD` (simples/dev)
+- `SYSTEM_ADMIN_PASSWORD_HASH` (recomendado)
+
+## Execucao
+
 ```bash
 npm install
+npm run api:dev
+```
+
+Em outro terminal:
+
+```bash
 npm run dev
 ```
 
+- Frontend: `http://localhost:5173`
+- API: `http://localhost:4000/api`
+- Portal global: `http://localhost:5173/system`
+
+## Credenciais iniciais
+
+### Provedor
+- Nao existe mais criacao automatica de provedor demo.
+- Primeiro acesse `/system` e cadastre o provedor com o gestor inicial.
+- Se voce vier de base antiga, o provedor migrado permanece no banco.
+
+### Admin global
+- Usuario default: `masteradmin`
+- Senha default correspondente ao hash em `backend/config/system-admin.js`
+
 ## Scripts
-- `npm run dev`: ambiente local.
-- `npm run lint`: analise esttica com ESLint.
-- `npm run build`: checagem TypeScript + build de producao.
-- `npm run preview`: visualizacao do build local.
 
-## Fluxo recomendado de uso
-1. Criar uma rede.
-2. Cadastrar cidade e POP.
-3. Adicionar caixas no mapa.
-4. Desenhar cabos (com ou sem origem/destino).
-5. Abrir detalhes da caixa/POP para fusoes e interligacoes.
-6. Exportar JSON para versionamento/backup.
+- `npm run dev`: frontend Vite
+- `npm run api:dev`: backend com watch
+- `npm run api:start`: backend sem watch
+- `npm run build`: TypeScript + build frontend
+- `npm run test`: testes unitarios
+- `npm run lint`: ESLint
 
-## Convencoes de dados
-- IDs sao gerados no cliente.
-- Distancias de cabos sao aproximadas por haversine.
-- Atenuacao GPON e estimada por regras simplificadas no store.
+## Banco local
 
-## Qualidade e manutencao
-- Evite adicionar regra de negocio em componentes de UI; priorize `networkStore`.
-- Sempre rodar `npm run lint` e `npm run build` antes de publicar.
-- Preferir tipagem explicita no dominio FTTH e evitar `any`.
-
-## Limitacoes atuais
-- Sem autenticacao/multiusuario.
-- Sem persistencia em backend (estado local + import/export JSON).
-- Sem suite de testes automatizados ainda.
-
-## Proximos passos sugeridos
-- Persistencia em API + historico de mudancas.
-- Testes unitarios para regras de fusao e continuidade.
-- Divisao do store monolitico em modulos por dominio (cabos, caixas, POPs).
+- Arquivo: `backend/data/db.json`
+- Suporta migracao automatica de schema antigo para o novo multi-tenant.

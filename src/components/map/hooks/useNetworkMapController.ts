@@ -1161,6 +1161,7 @@ export function useNetworkMapController() {
       capacity: newBoxCapacity,
       status: 'active',
     });
+    if (!created) return;
 
     if (pendingAttach) {
       attachEntityToCablePath(pendingAttach.cableId, { kind: 'box', id: created.id, name: created.name }, { position: pendingAttach.position, pathIndex: pendingAttach.pathIndex });
@@ -1182,16 +1183,18 @@ export function useNetworkMapController() {
         name: newCityName.trim(),
         sigla: newCitySigla.trim().toUpperCase(),
       });
+      if (!city) return;
       cityId = city.id;
     }
     if (!cityId) return;
 
-    addPop({
+    const created = addPop({
       cityId,
       name: newPopName.trim(),
       position: newPopPosition,
       status: 'active',
     });
+    if (!created) return;
 
     setShowAddPop(false);
     setNewPopName('');
@@ -1208,6 +1211,7 @@ export function useNetworkMapController() {
       position: newReservePosition,
       status: 'active',
     });
+    if (!created) return;
 
     if (pendingAttach) {
       attachEntityToCablePath(pendingAttach.cableId, { kind: 'reserve', id: created.id, name: created.name }, { position: pendingAttach.position, pathIndex: pendingAttach.pathIndex });
@@ -1245,7 +1249,7 @@ export function useNetworkMapController() {
     const anchoredPath = buildAnchoredPath(cableWaypoints, startEndpoint?.position, endEndpoint?.position);
     const topologyNotes = validation.warnings.map((warning) => `[Topologia] ${warning}`);
 
-    addCable({
+    const created = addCable({
       name: cableName.trim() || (startEndpoint && endEndpoint ? `Cabo ${startEndpoint.name} -> ${endEndpoint.name}` : `Cabo Livre ${new Date().toLocaleTimeString('pt-BR')}`),
       type: effectiveType,
       model: manualCableControl ? cableModel : resolveDefaultCableModel(effectiveType),
@@ -1260,6 +1264,7 @@ export function useNetworkMapController() {
       color: '#00AA00',
       observations: topologyNotes.length > 0 ? topologyNotes.join('\n') : undefined,
     });
+    if (!created) return;
     
     setShowAddCable(false);
     setCableName('');

@@ -160,7 +160,8 @@ export function NetworkPanel() {
 
   const handleCreateNetwork = () => {
     if (!newNetworkName.trim()) return;
-    createNetwork(newNetworkName.trim(), newNetworkDescription.trim());
+    const created = createNetwork(newNetworkName.trim(), newNetworkDescription.trim());
+    if (!created) return;
     setShowNewNetwork(false);
     setNewNetworkName('');
     setNewNetworkDescription('');
@@ -480,11 +481,12 @@ export function NetworkPanel() {
 
   const handleAddCityFromSidebar = () => {
     if (!cityName.trim() || !citySigla.trim()) return;
-    addCity({
+    const created = addCity({
       name: cityName.trim(),
       sigla: citySigla.trim().toUpperCase(),
       state: cityState.trim() || undefined,
     });
+    if (!created) return;
     setShowAddCity(false);
     resetCityForm();
   };
@@ -500,16 +502,18 @@ export function NetworkPanel() {
         sigla: popNewCitySigla.trim().toUpperCase(),
         state: popNewCityState.trim() || undefined,
       });
+      if (!createdCity) return;
       cityId = createdCity.id;
     }
     if (!cityId) return;
 
-    addPop({
+    const created = addPop({
       cityId,
       name: popName.trim(),
       position: popPosition,
       status: popStatus as Pop['status'],
     });
+    if (!created) return;
 
     setShowAddPop(false);
     resetPopForm();
@@ -587,6 +591,7 @@ export function NetworkPanel() {
             sigla: elementMapPopNewCitySigla.trim().toUpperCase(),
             state: elementMapPopNewCityState.trim() || undefined,
           });
+          if (!createdCity) return;
           cityId = createdCity.id;
         }
         if (!cityId) return;
@@ -596,6 +601,7 @@ export function NetworkPanel() {
           position: elementPosition,
           status: elementMapPopStatus as Pop['status'],
         });
+        if (!created) return;
         linkedEntityId = created.id;
         linkedEntityType = 'pop';
       } else if (elementType === 'box') {
@@ -609,6 +615,7 @@ export function NetworkPanel() {
           capacity: parsedCapacity,
           status: elementMapBoxStatus as BoxType['status'],
         });
+        if (!created) return;
         linkedEntityId = created.id;
         linkedEntityType = 'box';
       } else if (elementType === 'reserve') {
@@ -618,6 +625,7 @@ export function NetworkPanel() {
           position: elementPosition,
           status: elementMapReserveStatus,
         });
+        if (!created) return;
         linkedEntityId = created.id;
         linkedEntityType = 'reserve';
       }

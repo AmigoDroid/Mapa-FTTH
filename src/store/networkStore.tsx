@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 import type { 
   Network, 
   Box, 
@@ -57,6 +57,9 @@ import {
   clearPopFusionFromCables,
 } from '@/store/popEndpointUtils';
 import { normalizeImportedNetwork } from '@/store/networkImportUtils';
+import { useAuth } from '@/store/authStore';
+import { PERMISSION_LABELS, type AuthPermission } from '@/auth/permissions';
+import { toast } from 'sonner';
 
 interface NetworkState {
   currentNetwork: Network | null;
@@ -74,10 +77,10 @@ interface NetworkState {
 
 interface NetworkActions {
   setCurrentNetwork: (network: Network) => void;
-  createNetwork: (name: string, description?: string) => Network;
-  addBox: (box: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => Box;
-  addCity: (city: Omit<City, 'id' | 'popIds'>) => City;
-  addPop: (pop: Omit<Pop, 'id' | 'dios' | 'olts' | 'switches' | 'routers' | 'cables' | 'fusions'>) => Pop;
+  createNetwork: (name: string, description?: string) => Network | null;
+  addBox: (box: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => Box | null;
+  addCity: (city: Omit<City, 'id' | 'popIds'>) => City | null;
+  addPop: (pop: Omit<Pop, 'id' | 'dios' | 'olts' | 'switches' | 'routers' | 'cables' | 'fusions'>) => Pop | null;
   updatePop: (popId: string, updates: Partial<Pop>) => void;
   removePop: (popId: string) => void;
   addDioToPop: (popId: string, dioData: Omit<PopDio, 'id'>) => PopDio | null;
@@ -100,13 +103,13 @@ interface NetworkActions {
   disconnectPopFusion: (popId: string, fusionId: string) => void;
   updateBox: (boxId: string, updates: Partial<Box>) => void;
   removeBox: (boxId: string) => void;
-  addCable: (cable: Omit<Cable, 'id' | 'fibers'>) => Cable;
+  addCable: (cable: Omit<Cable, 'id' | 'fibers'>) => Cable | null;
   updateCable: (cableId: string, updates: Partial<Cable>) => void;
   removeCable: (cableId: string) => void;
-  addReserve: (reserve: Omit<ReservePoint, 'id'>) => ReservePoint;
+  addReserve: (reserve: Omit<ReservePoint, 'id'>) => ReservePoint | null;
   updateReserve: (reserveId: string, updates: Partial<ReservePoint>) => void;
   removeReserve: (reserveId: string) => void;
-  addFusion: (fusion: Omit<Fusion, 'id' | 'dateCreated'>) => Fusion;
+  addFusion: (fusion: Omit<Fusion, 'id' | 'dateCreated'>) => Fusion | null;
   removeFusion: (fusionId: string) => void;
   connectFibers: (boxAId: string, fiberAId: string, boxBId: string, fiberBId: string, position: Position) => Fusion | null;
   connectBoxEndpoints: (
@@ -119,7 +122,7 @@ interface NetworkActions {
   disconnectFibers: (fusionId: string) => void;
   addSplitterToBox: (boxId: string, splitterData: Omit<Splitter, 'id' | 'inputFibers' | 'outputFibers' | 'attenuation' | 'status'>) => Splitter | null;
   removeSplitterFromBox: (boxId: string, splitterId: string) => void;
-  testContinuity: (test: Omit<ContinuityTest, 'id' | 'testedAt'>) => ContinuityTest;
+  testContinuity: (test: Omit<ContinuityTest, 'id' | 'testedAt'>) => ContinuityTest | null;
   selectBox: (box: Box | null) => void;
   selectPop: (pop: Pop | null) => void;
   selectCable: (cable: Cable | null) => void;
@@ -458,6 +461,7 @@ const rebuildBoxCableLinks = (boxes: Box[], cables: Cable[]): Box[] => {
 };
 
 export function NetworkProvider({ children }: { children: ReactNode }) {
+  const { can } = useAuth();
   const [state, setState] = useState<NetworkState>({
     currentNetwork: null,
     selectedBox: null,
@@ -471,6 +475,33 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     showContinuityModal: false,
     activeFusion: null,
   });
+  const deniedToastRef = useRef<Partial<Record<AuthPermission, number>>>({});
+
+  const notifyPermissionDenied = useCallback((permission: AuthPermission) => {
+    const now = Date.now();
+    const lastShownAt = deniedToastRef.current[permission] || 0;
+    if (now - lastShownAt < 1200) return;
+
+    deniedToastRef.current[permission] = now;
+    const label = PERMISSION_LABELS[permission] || permission;
+    toast.error(`Permissao insuficiente: ${label}.`);
+  }, []);
+
+  const guardAction = useCallback(
+    <Args extends unknown[], Result>(
+      permission: AuthPermission,
+      action: (...args: Args) => Result,
+      fallback: Result
+    ) =>
+      (...args: Args): Result => {
+        if (!can(permission)) {
+          notifyPermissionDenied(permission);
+          return fallback;
+        }
+        return action(...args);
+      },
+    [can, notifyPermissionDenied]
+  );
 
   const setCurrentNetwork = useCallback((network: Network) => {
     setState(prev => ({ ...prev, currentNetwork: network }));
@@ -495,6 +526,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCity = useCallback((cityData: Omit<City, 'id' | 'popIds'>) => {
+    if (!state.currentNetwork) return null;
+
     const city: City = {
       ...cityData,
       id: generateId(),
@@ -514,9 +547,11 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return city;
-  }, []);
+  }, [state.currentNetwork]);
 
   const addPop = useCallback((popData: Omit<Pop, 'id' | 'dios' | 'olts' | 'switches' | 'routers' | 'cables' | 'fusions'>) => {
+    if (!state.currentNetwork) return null;
+
     const pop: Pop = {
       ...popData,
       id: generateId(),
@@ -547,7 +582,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return pop;
-  }, []);
+  }, [state.currentNetwork]);
 
   const updatePop = useCallback((popId: string, updates: Partial<Pop>) => {
     setState((prev) => {
@@ -584,6 +619,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addBox = useCallback((boxData: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => {
+    if (!state.currentNetwork) return null;
+
     const requestedCapacity = Number.isFinite(boxData.capacity) ? boxData.capacity : getDefaultBoxCapacity(boxData.type);
     const safeCapacity = Math.max(1, requestedCapacity);
     const box: Box = {
@@ -610,7 +647,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return box;
-  }, []);
+  }, [state.currentNetwork]);
 
   const updateBox = useCallback((boxId: string, updates: Partial<Box>) => {
     setState((prev) => {
@@ -714,6 +751,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCable = useCallback((cableData: Omit<Cable, 'id' | 'fibers'>) => {
+    if (!state.currentNetwork) return null;
+
     const fallbackGeometry = enforceCableGeometry(
       cableData.fiberCount,
       cableData.looseTubeCount,
@@ -784,7 +823,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return createdCable;
-  }, []);
+  }, [state.currentNetwork]);
 
   const updateCable = useCallback((cableId: string, updates: Partial<Cable>) => {
     setState((prev) => {
@@ -1339,6 +1378,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, [state.currentNetwork, updatePop]);
 
   const addReserve = useCallback((reserveData: Omit<ReservePoint, 'id'>) => {
+    if (!state.currentNetwork) return null;
+
     const reserve: ReservePoint = {
       ...reserveData,
       id: generateId(),
@@ -1357,7 +1398,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return reserve;
-  }, []);
+  }, [state.currentNetwork]);
 
   const updateReserve = useCallback((reserveId: string, updates: Partial<ReservePoint>) => {
     setState(prev => {
@@ -1395,6 +1436,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addFusion = useCallback((fusionData: Omit<Fusion, 'id' | 'dateCreated'>) => {
+    if (!state.currentNetwork) return null;
+
     const fusion: Fusion = {
       ...fusionData,
       id: generateId(),
@@ -1412,7 +1455,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
 
     return fusion;
-  }, []);
+  }, [state.currentNetwork]);
 
   const removeFusion = useCallback((fusionId: string) => {
     setState(prev => {
@@ -1897,54 +1940,54 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const value = {
+  const value: NetworkState & NetworkActions = {
     ...state,
-    setCurrentNetwork,
-    createNetwork,
-    addCity,
-    addPop,
-    updatePop,
-    removePop,
-    addDioToPop,
-    addOltToPop,
-    addSlotToOlt,
-    activateOltPon,
-    addSwitchToPop,
-    addRouterToPop,
-    removeDioFromPop,
-    removeOltFromPop,
-    removeSwitchFromPop,
-    removeRouterFromPop,
-    toggleOltUplink,
-    addPonToOlt,
-    toggleOltPon,
-    toggleSwitchPort,
-    toggleRouterInterface,
-    addCableToPop,
-    connectPopEndpoints,
-    disconnectPopFusion,
-    addBox,
-    updateBox,
-    removeBox,
-    addCable,
-    updateCable,
-    removeCable,
-    addReserve,
-    updateReserve,
-    removeReserve,
-    addFusion,
-    removeFusion,
-    connectFibers,
-    connectBoxEndpoints,
-    disconnectFibers,
-    addSplitterToBox,
-    removeSplitterFromBox,
-    testContinuity,
+    setCurrentNetwork: guardAction('network.read', setCurrentNetwork, undefined),
+    createNetwork: guardAction('network.create', createNetwork, null),
+    addCity: guardAction('network.update', addCity, null),
+    addPop: guardAction('network.update', addPop, null),
+    updatePop: guardAction('network.update', updatePop, undefined),
+    removePop: guardAction('network.delete', removePop, undefined),
+    addDioToPop: guardAction('network.update', addDioToPop, null),
+    addOltToPop: guardAction('network.update', addOltToPop, null),
+    addSlotToOlt: guardAction('network.update', addSlotToOlt, null),
+    activateOltPon: guardAction('network.update', activateOltPon, undefined),
+    addSwitchToPop: guardAction('network.update', addSwitchToPop, null),
+    addRouterToPop: guardAction('network.update', addRouterToPop, null),
+    removeDioFromPop: guardAction('network.delete', removeDioFromPop, undefined),
+    removeOltFromPop: guardAction('network.delete', removeOltFromPop, undefined),
+    removeSwitchFromPop: guardAction('network.delete', removeSwitchFromPop, undefined),
+    removeRouterFromPop: guardAction('network.delete', removeRouterFromPop, undefined),
+    toggleOltUplink: guardAction('network.update', toggleOltUplink, undefined),
+    addPonToOlt: guardAction('network.update', addPonToOlt, null),
+    toggleOltPon: guardAction('network.update', toggleOltPon, undefined),
+    toggleSwitchPort: guardAction('network.update', toggleSwitchPort, undefined),
+    toggleRouterInterface: guardAction('network.update', toggleRouterInterface, undefined),
+    addCableToPop: guardAction('network.update', addCableToPop, null),
+    connectPopEndpoints: guardAction('network.update', connectPopEndpoints, null),
+    disconnectPopFusion: guardAction('network.delete', disconnectPopFusion, undefined),
+    addBox: guardAction('network.update', addBox, null),
+    updateBox: guardAction('network.update', updateBox, undefined),
+    removeBox: guardAction('network.delete', removeBox, undefined),
+    addCable: guardAction('network.update', addCable, null),
+    updateCable: guardAction('network.update', updateCable, undefined),
+    removeCable: guardAction('network.delete', removeCable, undefined),
+    addReserve: guardAction('network.update', addReserve, null),
+    updateReserve: guardAction('network.update', updateReserve, undefined),
+    removeReserve: guardAction('network.delete', removeReserve, undefined),
+    addFusion: guardAction('network.update', addFusion, null),
+    removeFusion: guardAction('network.delete', removeFusion, undefined),
+    connectFibers: guardAction('network.update', connectFibers, null),
+    connectBoxEndpoints: guardAction('network.update', connectBoxEndpoints, null),
+    disconnectFibers: guardAction('network.delete', disconnectFibers, undefined),
+    addSplitterToBox: guardAction('network.update', addSplitterToBox, null),
+    removeSplitterFromBox: guardAction('network.delete', removeSplitterFromBox, undefined),
+    testContinuity: guardAction('analysis.run', testContinuity, null),
     selectBox,
     selectPop,
     selectCable,
     selectFiber,
-    setEditing,
+    setEditing: guardAction('network.editMode', setEditing, undefined),
     setShowFusionModal,
     setShowContinuityModal,
     setActiveFusion,
@@ -1952,9 +1995,9 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     getFiberContinuity,
     getFiberRouteReport,
     generateFibers,
-    importNetwork,
-    exportNetwork,
-    resetNetwork,
+    importNetwork: guardAction('network.import', importNetwork, false),
+    exportNetwork: guardAction('network.export', exportNetwork, ''),
+    resetNetwork: guardAction('network.reset', resetNetwork, undefined),
   };
 
   return (

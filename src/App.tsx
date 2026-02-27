@@ -1,232 +1,238 @@
-import { lazy, Suspense, useState } from 'react';
-import { useNetworkStore } from '@/store/networkStore';
-import { FiberColorLegend } from '@/components/ui-custom/FiberColorLegend';
-import { Button } from '@/components/ui/button';
-import { Toaster } from '@/components/ui/sonner';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  Menu,
-  X,
-  Network,
-  Info,
-  TestTube,
-  Plus,
-  Radar,
-} from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { projectApi } from '@/api/adminApi';
+import { LoginScreen } from '@/components/auth/LoginScreen';
+import { ProjectDashboard } from '@/components/dashboard/ProjectDashboard';
+import { Toaster } from '@/components/ui/sonner';
+import { NetworkWorkspace } from '@/components/workspace/NetworkWorkspace';
+import { downloadNetworkAsKml } from '@/lib/projectKmlExport';
+import { useAuth } from '@/store/authStore';
+import { getLastOpenedProjectId, setLastOpenedProjectId, type ProjectSummary } from '@/store/projectStorage';
+import { useNetworkStore } from '@/store/networkStore';
 
-const NetworkMap = lazy(() =>
-  import('@/components/map/NetworkMap').then((module) => ({ default: module.NetworkMap }))
-);
-const NetworkPanel = lazy(() =>
-  import('@/components/ui-custom/NetworkPanel').then((module) => ({ default: module.NetworkPanel }))
-);
-const ContinuityTester = lazy(() =>
-  import('@/components/ui-custom/ContinuityTester').then((module) => ({
-    default: module.ContinuityTester,
-  }))
-);
-const BoxDetail = lazy(() =>
-  import('@/components/ui-custom/BoxDetail').then((module) => ({ default: module.BoxDetail }))
-);
-const PopDetail = lazy(() =>
-  import('@/components/ui-custom/PopDetail').then((module) => ({ default: module.PopDetail }))
-);
-const FiberAnalyzerPanel = lazy(() =>
-  import('@/components/ui-custom/FiberAnalyzerPanel').then((module) => ({
-    default: module.FiberAnalyzerPanel,
-  }))
-);
+type AppScreen = 'dashboard' | 'workspace';
+
+const toErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : fallback;
 
 function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [showLegend, setShowLegend] = useState(false);
-  const [showTester, setShowTester] = useState(false);
-  const [showFiberAnalyzer, setShowFiberAnalyzer] = useState(false);
-  const [showNewNetwork, setShowNewNetwork] = useState(false);
-  const [newNetworkName, setNewNetworkName] = useState('');
-  const [newNetworkDescription, setNewNetworkDescription] = useState('');
+  const { provider, currentUser, isAuthenticated, isHydrating, can, logout, refreshSession } = useAuth();
+  const { currentNetwork, setCurrentNetwork, resetNetwork } = useNetworkStore();
+  const [screen, setScreen] = useState<AppScreen>('dashboard');
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const hydratedUserIdRef = useRef<string | null>(null);
+  const autosaveErrorAtRef = useRef(0);
+  const projectScope = provider?.id || 'default';
 
-  const {
-    currentNetwork,
-    createNetwork,
-    selectedBox,
-    selectedPop,
-    selectBox,
-    selectPop,
-  } = useNetworkStore();
+  const refreshProjects = useCallback(async (silent = false) => {
+    try {
+      const response = await projectApi.listProjects();
+      setProjects(response);
+    } catch (error) {
+      if (!silent) {
+        toast.error(toErrorMessage(error, 'Falha ao carregar projetos da API.'));
+      }
+    }
+  }, []);
 
-  const handleCreateNetwork = () => {
-    if (!newNetworkName.trim()) {
-      toast.error('Digite um nome para a rede');
+  useEffect(() => {
+    if (isHydrating) return;
+    if (!isAuthenticated || !currentUser) {
+      hydratedUserIdRef.current = null;
+      setScreen('dashboard');
+      setProjects([]);
       return;
     }
-    createNetwork(newNetworkName, newNetworkDescription);
-    setShowNewNetwork(false);
-    setNewNetworkName('');
-    setNewNetworkDescription('');
-    toast.success('Rede criada com sucesso!');
-  };
+
+    let cancelled = false;
+    const hydrate = async () => {
+      await refreshProjects(true);
+      if (cancelled) return;
+      if (hydratedUserIdRef.current === currentUser.id) return;
+      hydratedUserIdRef.current = currentUser.id;
+
+      const lastOpenedId = getLastOpenedProjectId(projectScope);
+      if (!lastOpenedId) {
+        setScreen('dashboard');
+        return;
+      }
+
+      try {
+        const project = await projectApi.loadProject(lastOpenedId);
+        if (cancelled) return;
+        setCurrentNetwork(project.network);
+        setScreen('workspace');
+      } catch {
+        setLastOpenedProjectId(null, projectScope);
+        setScreen('dashboard');
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, isAuthenticated, isHydrating, projectScope, refreshProjects, setCurrentNetwork]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser || !currentNetwork) return;
+    if (screen !== 'workspace') return;
+
+    const timeoutId = window.setTimeout(() => {
+      void projectApi
+        .saveProjectNetwork(
+          currentNetwork.id,
+          currentNetwork,
+          currentNetwork.name,
+          currentNetwork.description
+        )
+        .then(() => {
+          setLastOpenedProjectId(currentNetwork.id, projectScope);
+        })
+        .catch(() => {
+          const now = Date.now();
+          if (now - autosaveErrorAtRef.current > 3000) {
+            autosaveErrorAtRef.current = now;
+            toast.error('Falha ao sincronizar projeto com a API.');
+          }
+        });
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentNetwork, currentUser, isAuthenticated, projectScope, screen]);
+
+  const handleLogout = useCallback(() => {
+    resetNetwork();
+    setScreen('dashboard');
+    logout();
+  }, [logout, resetNetwork]);
+
+  const handleCreateProject = useCallback(
+    async (name: string, description?: string): Promise<boolean> => {
+      if (!name.trim()) {
+        toast.error('Informe um nome para o projeto.');
+        return false;
+      }
+
+      try {
+        const created = await projectApi.createProject(name.trim(), description?.trim() || undefined);
+        await refreshProjects(true);
+        setLastOpenedProjectId(created.id, projectScope);
+        toast.success('Projeto criado com sucesso.');
+        return true;
+      } catch (error) {
+        toast.error(toErrorMessage(error, 'Nao foi possivel criar o projeto.'));
+        return false;
+      }
+    },
+    [projectScope, refreshProjects]
+  );
+
+  const handleOpenProject = useCallback(
+    async (projectId: string) => {
+      try {
+        const project = await projectApi.loadProject(projectId);
+        setCurrentNetwork(project.network);
+        setLastOpenedProjectId(projectId, projectScope);
+        setScreen('workspace');
+      } catch (error) {
+        await refreshProjects(true);
+        toast.error(toErrorMessage(error, 'Projeto nao encontrado na API.'));
+      }
+    },
+    [projectScope, refreshProjects, setCurrentNetwork]
+  );
+
+  const handleDeleteProject = useCallback(
+    async (projectId: string) => {
+      try {
+        await projectApi.deleteProject(projectId);
+        if (currentNetwork && currentNetwork.id === projectId) {
+          resetNetwork();
+          setScreen('dashboard');
+        }
+        await refreshProjects(true);
+        toast.success('Projeto removido com sucesso.');
+      } catch (error) {
+        toast.error(toErrorMessage(error, 'Falha ao remover projeto.'));
+      }
+    },
+    [currentNetwork, refreshProjects, resetNetwork]
+  );
+
+  const handleExportProject = useCallback(
+    async (projectId: string) => {
+      try {
+        const network =
+          currentNetwork?.id === projectId
+            ? currentNetwork
+            : (await projectApi.loadProject(projectId)).network;
+        downloadNetworkAsKml(network);
+        toast.success('Arquivo KML exportado para Google Maps.');
+      } catch (error) {
+        toast.error(toErrorMessage(error, 'Falha ao exportar projeto.'));
+      }
+    },
+    [currentNetwork]
+  );
+
+  const handleOpenDashboard = useCallback(() => {
+    setScreen('dashboard');
+    void refreshProjects(true);
+  }, [refreshProjects]);
+
+  if (isHydrating) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm text-slate-600">
+        Carregando sessao...
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || !currentUser) {
+    return (
+      <>
+        <LoginScreen />
+        <Toaster />
+      </>
+    );
+  }
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      <div
-        className={`
-          transition-all duration-300 ease-in-out
-          ${sidebarOpen ? 'w-80' : 'w-0'}
-          overflow-hidden
-        `}
-      >
-        <Suspense fallback={<div className="h-full w-80 grid place-items-center text-xs text-gray-500">Carregando painel...</div>}>
-          <NetworkPanel />
-        </Suspense>
-      </div>
-
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-            >
-              {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </Button>
-            <div className="flex items-center gap-2">
-              <Network className="w-6 h-6 text-blue-600" />
-              <h1 className="text-xl font-bold">FABREU FTTH Doc</h1>
-            </div>
-            {currentNetwork && (
-              <span className="text-sm text-gray-500 ml-4">
-                {currentNetwork.name}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowLegend(!showLegend)}
-            >
-              <Info className="w-4 h-4 mr-1" />
-              Cores
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowTester(true)}
-            >
-              <TestTube className="w-4 h-4 mr-1" />
-              Testar
-            </Button>
-            <Button
-              variant={showFiberAnalyzer ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setShowFiberAnalyzer((prev) => !prev)}
-            >
-              <Radar className="w-4 h-4 mr-1" />
-              Analisar Fibra
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => setShowNewNetwork(true)}
-            >
-              <Plus className="w-4 h-4 mr-1" />
-              Nova Rede
-            </Button>
-          </div>
-        </header>
-
-        <main className="flex-1 relative">
-          <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-sm text-gray-500">Carregando mapa...</div>}>
-            <NetworkMap />
-          </Suspense>
-          {showFiberAnalyzer && (
-            <Suspense fallback={null}>
-              <FiberAnalyzerPanel open={showFiberAnalyzer} onOpenChange={setShowFiberAnalyzer} />
-            </Suspense>
-          )}
-
-          {showLegend && <FiberColorLegend />}
-        </main>
-      </div>
-
-      {selectedBox && (
-        <Suspense fallback={null}>
-          <BoxDetail
-            box={selectedBox}
-            open={!!selectedBox}
-            onOpenChange={(open: boolean) => !open && selectBox(null)}
-          />
-        </Suspense>
+    <>
+      {screen === 'dashboard' ? (
+        <ProjectDashboard
+          currentProviderName={provider?.name || 'Provedor'}
+          currentUserName={currentUser.displayName}
+          currentUserRole={currentUser.role}
+          canCreateProject={can('network.create')}
+          canDeleteProject={can('network.delete')}
+          canExportProject={can('network.export')}
+          canReadUsers={can('users.read')}
+          canManageUsers={can('users.create') || can('users.update') || can('users.delete')}
+          canReadRoles={can('roles.read')}
+          canManageRoles={can('roles.update')}
+          canReadLicense={can('license.read')}
+          canManageLicense={can('license.update')}
+          canReadAudit={can('audit.read')}
+          currentProjectId={currentNetwork?.id || null}
+          projects={projects}
+          onCreateProject={handleCreateProject}
+          onOpenProject={handleOpenProject}
+          onDeleteProject={handleDeleteProject}
+          onExportProject={handleExportProject}
+          onRefreshSession={refreshSession}
+          onRefreshProjects={() => refreshProjects(false)}
+          onLogout={handleLogout}
+        />
+      ) : (
+        <NetworkWorkspace onOpenDashboard={handleOpenDashboard} onLogout={handleLogout} />
       )}
-
-      {selectedPop && (
-        <Suspense fallback={null}>
-          <PopDetail
-            pop={selectedPop}
-            open={!!selectedPop}
-            onOpenChange={(open: boolean) => !open && selectPop(null)}
-          />
-        </Suspense>
-      )}
-
-      {showTester && (
-        <Suspense fallback={null}>
-          <ContinuityTester
-            open={showTester}
-            onOpenChange={setShowTester}
-          />
-        </Suspense>
-      )}
-
-      <Dialog open={showNewNetwork} onOpenChange={setShowNewNetwork}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Criar Nova Rede</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label>Nome da Rede</Label>
-              <Input
-                value={newNetworkName}
-                onChange={(e) => setNewNetworkName(e.target.value)}
-                placeholder="Ex: Rede Centro"
-              />
-            </div>
-            <div>
-              <Label>Descricao (opcional)</Label>
-              <Input
-                value={newNetworkDescription}
-                onChange={(e) => setNewNetworkDescription(e.target.value)}
-                placeholder="Descricao da rede"
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={handleCreateNetwork} className="flex-1">
-                Criar Rede
-              </Button>
-              <Button variant="outline" onClick={() => setShowNewNetwork(false)}>
-                Cancelar
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <Toaster />
-    </div>
+    </>
   );
 }
 
 export default App;
-

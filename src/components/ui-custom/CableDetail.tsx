@@ -148,9 +148,7 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
   const handleTestFiber = (fiber: Fiber) => {
     const continuity = getFiberContinuity(fiber.id);
     const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
-    setTestResults(prev => new Map(prev).set(fiber.id, result));
-    
-    testContinuity({
+    const savedTest = testContinuity({
       cableId: cable.id,
       fiberNumber: fiber.number,
       startPoint: startBox?.name || '',
@@ -160,6 +158,9 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
       distance: cable.length,
       technician: 'Tecnico',
     });
+    if (!savedTest) return;
+
+    setTestResults(prev => new Map(prev).set(fiber.id, result));
   };
 
   const handleTestAllFibers = () => {
@@ -167,8 +168,7 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
     cable.fibers.forEach((fiber) => {
       const continuity = getFiberContinuity(fiber.id);
       const result: 'pass' | 'fail' = continuity.connected ? 'pass' : 'fail';
-      newResults.set(fiber.id, result);
-      testContinuity({
+      const savedTest = testContinuity({
         cableId: cable.id,
         fiberNumber: fiber.number,
         startPoint: startBox?.name || '',
@@ -178,6 +178,9 @@ export function CableDetail({ cable, open, onOpenChange }: CableDetailProps) {
         distance: cable.length,
         technician: 'Tecnico',
       });
+      if (savedTest) {
+        newResults.set(fiber.id, result);
+      }
     });
     setTestResults(newResults);
   };
