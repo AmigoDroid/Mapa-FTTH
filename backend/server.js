@@ -6,11 +6,15 @@ import { createProviderRouter } from './routes/provider.js';
 import { createSystemRouter } from './routes/system.js';
 
 const app = express();
-const PORT = Number(process.env.API_PORT || 4000);
+const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
 const JWT_SECRET = process.env.API_JWT_SECRET || 'change-me-in-production';
 const ACCESS_TOKEN_TTL = process.env.API_TOKEN_TTL || '10h';
 
-app.use(cors());
+const corsOrigin = process.env.API_CORS_ORIGIN
+  ? process.env.API_CORS_ORIGIN.split(',').map((value) => value.trim()).filter(Boolean)
+  : '*';
+
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json({ limit: '5mb' }));
 
 app.use('/api', createProviderRouter({ jwtSecret: JWT_SECRET, accessTokenTtl: ACCESS_TOKEN_TTL }));

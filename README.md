@@ -78,3 +78,14 @@ npm run dev
 
 - Arquivo: `backend/data/db.json`
 - Suporta migracao automatica de schema antigo para o novo multi-tenant.
+
+## Deploy em producao (Vercel + API externa)
+
+A Vercel deste projeto publica o frontend. A API Node/Express deve rodar em um backend separado (ex.: Render/Railway).
+
+1. Publique a API com `npm run api:start`.
+2. Garanta que o backend responda `GET /api/health`.
+3. No frontend da Vercel, configure `VITE_API_BASE_URL=https://SEU-BACKEND/api`.
+4. Redeploy da Vercel.
+
+Se `https://SEU-FRONTEND.vercel.app/api/system/auth/login` retornar `404 NOT_FOUND`, isso significa que nao existe API nesse dominio e o `VITE_API_BASE_URL` precisa apontar para seu backend.
