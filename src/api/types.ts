@@ -123,6 +123,9 @@ export interface ApiProviderSummary {
   updatedAt: string;
   usersCount: number;
   activeUsersCount: number;
+  inactiveUsersCount: number;
+  privilegedUsersCount: number;
+  activePrivilegedUsersCount: number;
   projectsCount: number;
   license: ApiLicense;
 }

@@ -1,14 +1,29 @@
-const DEFAULT_PASSWORD_HASH =
-  '18406cb92257a7d42c558d0aed6c3d67:0f2f0f4b37e00fe5ab52a8c4b4bf85be43166f045ea988ec257edac4b6bc6fe982da3bd264ae2fe1ff7ac5ac07fa1bc670516e5b048e4d19774b6163d9170b3e';
-
+const rawUsername = String(process.env.SYSTEM_ADMIN_USERNAME || '').trim();
+const rawDisplayName = String(process.env.SYSTEM_ADMIN_DISPLAY_NAME || '').trim();
 const rawPasswordHash = String(process.env.SYSTEM_ADMIN_PASSWORD_HASH || '').trim();
 const rawPassword = String(process.env.SYSTEM_ADMIN_PASSWORD || '').trim();
 const hashLooksValid = rawPasswordHash.includes(':');
 
+if (!rawUsername) {
+  throw new Error('SYSTEM_ADMIN_USERNAME nao definido. Configure no arquivo .env.');
+}
+
+if (rawPasswordHash && !hashLooksValid) {
+  throw new Error(
+    'SYSTEM_ADMIN_PASSWORD_HASH invalido. Use o formato salt:hash ou deixe vazio no .env.'
+  );
+}
+
+if (!rawPassword && !hashLooksValid) {
+  throw new Error(
+    'Defina SYSTEM_ADMIN_PASSWORD ou SYSTEM_ADMIN_PASSWORD_HASH no arquivo .env.'
+  );
+}
+
 export const SYSTEM_ADMIN_ACCOUNT = {
   id: 'sys-root-admin',
-  username: process.env.SYSTEM_ADMIN_USERNAME || 'masteradmin',
-  displayName: process.env.SYSTEM_ADMIN_DISPLAY_NAME || 'Administrador Global',
-  passwordHash: hashLooksValid ? rawPasswordHash : DEFAULT_PASSWORD_HASH,
-  passwordPlain: rawPassword || (rawPasswordHash && !hashLooksValid ? rawPasswordHash : ''),
+  username: rawUsername,
+  displayName: rawDisplayName || 'Administrador Global',
+  passwordHash: hashLooksValid ? rawPasswordHash : '',
+  passwordPlain: rawPassword,
 };

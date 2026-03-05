@@ -30,6 +30,16 @@ export const findProviderBySlug = (db, slug) =>
 export const ensureAtLeastOnePrivilegedUser = (users) =>
   users.some((user) => user.active && (user.role === 'manager' || user.role === 'admin'));
 
+const countPrivilegedUsers = (users) =>
+  users.filter((user) => user.role === 'manager' || user.role === 'admin').length;
+
+const countActivePrivilegedUsers = (users) =>
+  users.filter(
+    (user) => user.active && (user.role === 'manager' || user.role === 'admin')
+  ).length;
+
+const countInactiveUsers = (users) => users.filter((user) => !user.active).length;
+
 export const createEmptyNetwork = (projectId, name, description) => {
   const timestamp = nowIso();
   return {
@@ -72,6 +82,9 @@ export const buildProviderSummary = (provider) => ({
   updatedAt: provider.updatedAt,
   usersCount: (provider.users || []).length,
   activeUsersCount: countActiveUsers(provider.users || []),
+  inactiveUsersCount: countInactiveUsers(provider.users || []),
+  privilegedUsersCount: countPrivilegedUsers(provider.users || []),
+  activePrivilegedUsersCount: countActivePrivilegedUsers(provider.users || []),
   projectsCount: (provider.projects || []).length,
   license: serializeLicense(provider.license, provider.users || []),
 });

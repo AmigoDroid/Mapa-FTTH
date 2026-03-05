@@ -40,6 +40,7 @@ export function SystemLoginScreen() {
                   <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <Input
                     id="system-login-username"
+                    placeholder="Digite seu usuario global"
                     value={username}
                     onChange={(event) => setUsername(event.target.value)}
                     className="pl-10"
@@ -55,6 +56,7 @@ export function SystemLoginScreen() {
                   <Input
                     id="system-login-password"
                     type="password"
+                    placeholder="Digite sua senha de acesso"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     className="pl-10"
@@ -70,7 +72,7 @@ export function SystemLoginScreen() {
               )}
 
               <Button type="submit" className="w-full" disabled={isAuthenticating}>
-                {isAuthenticating ? 'Autenticando...' : 'Entrar como Admin Global'}
+                {isAuthenticating ? 'Autenticando...' : 'Entrar como Administrador Global'}
               </Button>
             </form>
           </CardContent>

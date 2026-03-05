@@ -4,11 +4,12 @@ import type {
   ApiLicense,
   ApiProjectSummary,
   ApiProviderSummary,
+  ApiRole,
   ApiSessionUser,
   SystemAuthSessionPayload,
   SystemLoginResponse,
 } from '@/api/types';
-import type { AuthRole } from '@/auth/permissions';
+import type { AuthPermission, AuthRole } from '@/auth/permissions';
 import type { Network } from '@/types/ftth';
 
 interface CreateProviderPayload {
@@ -65,6 +66,10 @@ interface UpdateProviderProjectPayload {
   name?: string;
   description?: string;
   network?: Network;
+}
+
+interface UpdateProviderRolePayload {
+  directPermissions: AuthPermission[] | string[];
 }
 
 export const systemApi = {
@@ -138,6 +143,24 @@ export const systemApi = {
     apiRequest<void>(`/system/providers/${providerId}/users/${userId}`, {
       method: 'DELETE',
     }),
+  listProviderRoles: async (providerId: string) => {
+    const response = await apiRequest<{ roles: ApiRole[] }>(`/system/providers/${providerId}/roles`);
+    return response.roles;
+  },
+  updateProviderRole: async (
+    providerId: string,
+    roleId: AuthRole,
+    payload: UpdateProviderRolePayload
+  ) => {
+    const response = await apiRequest<{ roles: ApiRole[] }>(
+      `/system/providers/${providerId}/roles/${roleId}`,
+      {
+        method: 'PATCH',
+        body: payload,
+      }
+    );
+    return response.roles;
+  },
   listProviderProjects: async (providerId: string) => {
     const response = await apiRequest<{ projects: ApiProjectSummary[] }>(`/system/providers/${providerId}/projects`);
     return response.projects;
@@ -160,6 +183,12 @@ export const systemApi = {
     apiRequest<void>(`/system/providers/${providerId}/projects/${projectId}`, {
       method: 'DELETE',
     }),
+  listProviderAuditLogs: async (providerId: string, limit = 200) => {
+    const response = await apiRequest<{ logs: ApiAuditLog[] }>(
+      `/system/providers/${providerId}/audit-logs?limit=${limit}`
+    );
+    return response.logs;
+  },
   listAuditLogs: async (limit = 200) => {
     const response = await apiRequest<{ logs: ApiAuditLog[] }>(`/system/audit-logs?limit=${limit}`);
     return response.logs;

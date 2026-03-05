@@ -44,6 +44,11 @@ const providerSessionPayload = (provider, user) => ({
   license: serializeLicense(provider.license, provider.users),
 });
 
+const PASSWORD_MIN_LENGTH = 8;
+const USERNAME_REGEX = /^[a-z0-9._-]{3,40}$/;
+const PROVIDER_SLUG_REGEX = /^[a-z0-9-]{3,80}$/;
+const isValidDisplayName = (value) => value.length >= 3 && value.length <= 80;
+
 export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
   const router = express.Router();
 
@@ -169,7 +174,12 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
     if (!providerSlug || !username || !password) {
       res
         .status(400)
-        .json({ message: 'Informe providerSlug, usuario e senha.' });
+        .json({ message: 'Informe slug do provedor, usuario e senha.' });
+      return;
+    }
+
+    if (!PROVIDER_SLUG_REGEX.test(providerSlug) || !USERNAME_REGEX.test(username)) {
+      res.status(400).json({ message: 'Formato de slug do provedor ou usuario invalido.' });
       return;
     }
 
@@ -262,17 +272,35 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
       if (!username || !displayName || !password || !role) {
         res
           .status(400)
-          .json({ message: 'Campos obrigatorios: username, displayName, password e role.' });
+          .json({
+            message:
+              'Campos obrigatorios: usuario de acesso, nome de exibicao, senha e perfil.',
+          });
         return;
       }
 
-      if (password.length < 6) {
-        res.status(400).json({ message: 'A senha deve ter ao menos 6 caracteres.' });
+      if (!USERNAME_REGEX.test(username)) {
+        res.status(400).json({
+          message:
+            'Usuario de acesso invalido. Use letras minusculas, numeros, ponto, underscore ou hifen (3 a 40 caracteres).',
+        });
+        return;
+      }
+
+      if (!isValidDisplayName(displayName)) {
+        res.status(400).json({ message: 'Nome do usuario deve ter entre 3 e 80 caracteres.' });
+        return;
+      }
+
+      if (password.length < PASSWORD_MIN_LENGTH) {
+        res.status(400).json({
+          message: `A senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`,
+        });
         return;
       }
 
       if (!roleExists(role)) {
-        res.status(400).json({ message: 'Role invalida.' });
+        res.status(400).json({ message: 'Perfil invalido.' });
         return;
       }
 
@@ -314,7 +342,7 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
           action: 'users.create',
           targetType: 'user',
           targetId: user.id,
-          details: `Usuario ${username} criado com role ${role}.`,
+          details: `Usuario ${username} criado com perfil ${role}.`,
         });
         return current;
       });
@@ -354,17 +382,32 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
             item.id !== userId && item.username.toLowerCase() === username
         )
       ) {
-        res.status(409).json({ message: 'Username em uso por outro usuario do provedor.' });
+        res.status(409).json({ message: 'Usuario de acesso em uso por outro usuario do provedor.' });
         return;
       }
 
-      if (password && password.length < 6) {
-        res.status(400).json({ message: 'A senha deve ter ao menos 6 caracteres.' });
+      if (username && !USERNAME_REGEX.test(username)) {
+        res.status(400).json({
+          message:
+            'Usuario de acesso invalido. Use letras minusculas, numeros, ponto, underscore ou hifen (3 a 40 caracteres).',
+        });
+        return;
+      }
+
+      if (displayName !== undefined && !isValidDisplayName(displayName)) {
+        res.status(400).json({ message: 'Nome do usuario deve ter entre 3 e 80 caracteres.' });
+        return;
+      }
+
+      if (password && password.length < PASSWORD_MIN_LENGTH) {
+        res.status(400).json({
+          message: `A senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`,
+        });
         return;
       }
 
       if (role && !roleExists(role)) {
-        res.status(400).json({ message: 'Role invalida.' });
+        res.status(400).json({ message: 'Perfil invalido.' });
         return;
       }
 
@@ -487,12 +530,14 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         : null;
 
       if (!AUTH_ROLES.includes(roleId)) {
-        res.status(404).json({ message: 'Role nao encontrada.' });
+        res.status(404).json({ message: 'Perfil nao encontrado.' });
         return;
       }
 
       if (!directPermissions) {
-        res.status(400).json({ message: 'Envie directPermissions (array de permissoes).' });
+        res
+          .status(400)
+          .json({ message: 'Envie o array directPermissions (permissoes diretas).' });
         return;
       }
 
@@ -534,7 +579,7 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
           action: 'roles.update',
           targetType: 'role',
           targetId: roleId,
-          details: `Role ${roleId} atualizada.`,
+          details: `Perfil ${roleId} atualizado.`,
         });
         return current;
       });
@@ -605,6 +650,14 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
       const description = String(req.body?.description || '').trim();
       if (!name) {
         res.status(400).json({ message: 'Informe o nome do projeto.' });
+        return;
+      }
+      if (name.length < 3 || name.length > 120) {
+        res.status(400).json({ message: 'Nome do projeto deve ter entre 3 e 120 caracteres.' });
+        return;
+      }
+      if (description.length > 500) {
+        res.status(400).json({ message: 'Descricao do projeto deve ter no maximo 500 caracteres.' });
         return;
       }
 
@@ -681,6 +734,15 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
       const incomingName = req.body?.name ? String(req.body.name).trim() : undefined;
       const incomingDescription =
         req.body?.description !== undefined ? String(req.body.description).trim() : undefined;
+
+      if (incomingName !== undefined && (incomingName.length < 3 || incomingName.length > 120)) {
+        res.status(400).json({ message: 'Nome do projeto deve ter entre 3 e 120 caracteres.' });
+        return;
+      }
+      if (incomingDescription !== undefined && incomingDescription.length > 500) {
+        res.status(400).json({ message: 'Descricao do projeto deve ter no maximo 500 caracteres.' });
+        return;
+      }
 
       const currentProject = (provider.projects || []).find((item) => item.id === projectId);
       if (!currentProject) {

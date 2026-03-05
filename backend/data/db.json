@@ -3,20 +3,20 @@
   "createdAt": "2026-02-26T22:10:41.400Z",
   "providers": [
     {
-      "id": "2072989f-60e5-4320-b442-845ee8890216",
-      "name": "Fabreu Telecom",
-      "slug": "fabreu-telecom",
+      "id": "129e62c2-9b65-482c-a7f1-70d59c9d4162",
+      "name": "fabreu",
+      "slug": "fabreutelecom",
       "status": "active",
-      "createdAt": "2026-02-26T23:44:53.940Z",
-      "updatedAt": "2026-02-27T00:13:54.340Z",
+      "createdAt": "2026-03-04T23:52:34.837Z",
+      "updatedAt": "2026-03-04T23:54:13.616Z",
       "license": {
-        "id": "lic-2072989f",
-        "key": "FTTH-2072989F",
-        "company": "Fabreu Telecom",
+        "id": "lic-129e62c2",
+        "key": "FTTH-129E62C2",
+        "company": "fabreu",
         "plan": "enterprise",
         "status": "active",
         "maxUsers": 20,
-        "expiresAt": "2027-02-26T23:44:53.940Z",
+        "expiresAt": "2027-03-04T23:52:34.837Z",
         "features": [
           "api_access",
           "project_management",
@@ -25,8 +25,8 @@
           "role_management",
           "audit_logs"
         ],
-        "createdAt": "2026-02-26T23:44:53.940Z",
-        "updatedAt": "2026-02-26T23:44:53.940Z"
+        "createdAt": "2026-03-04T23:52:34.837Z",
+        "updatedAt": "2026-03-04T23:52:34.837Z"
       },
       "roles": [
         {
@@ -38,8 +38,8 @@
             "network.read",
             "analysis.run"
           ],
-          "createdAt": "2026-02-26T23:44:53.940Z",
-          "updatedAt": "2026-02-26T23:44:53.940Z"
+          "createdAt": "2026-03-04T23:52:34.837Z",
+          "updatedAt": "2026-03-04T23:52:34.837Z"
         },
         {
           "id": "editor",
@@ -50,8 +50,8 @@
             "network.update",
             "network.editMode"
           ],
-          "createdAt": "2026-02-26T23:44:53.940Z",
-          "updatedAt": "2026-02-26T23:44:53.940Z"
+          "createdAt": "2026-03-04T23:52:34.837Z",
+          "updatedAt": "2026-03-04T23:52:34.837Z"
         },
         {
           "id": "manager",
@@ -69,8 +69,8 @@
             "license.read",
             "audit.read"
           ],
-          "createdAt": "2026-02-26T23:44:53.940Z",
-          "updatedAt": "2026-02-26T23:44:53.940Z"
+          "createdAt": "2026-03-04T23:52:34.837Z",
+          "updatedAt": "2026-03-04T23:52:34.837Z"
         },
         {
           "id": "admin",
@@ -80,278 +80,118 @@
             "network.delete",
             "network.reset"
           ],
-          "createdAt": "2026-02-26T23:44:53.940Z",
-          "updatedAt": "2026-02-26T23:44:53.940Z"
+          "createdAt": "2026-03-04T23:52:34.837Z",
+          "updatedAt": "2026-03-04T23:52:34.837Z"
         }
       ],
       "users": [
         {
-          "id": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "id": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
           "username": "wandson",
-          "displayName": "Gerente de TI",
-          "passwordHash": "48ef4b4c5d6f468c748b9915f0968ef6:d6e27b32e1d656f4d7ad8ccfc6d52cf4e595013eef4ce4653f6f1605687d8c94acef834f92ad92d1441c53f909c0affb7abc538f7f6dd1c1f5ae3d197ac13d1c",
+          "displayName": "Wandson TI",
+          "passwordHash": "939f2911e451f195cca51ec3f2ab1a00:6c71b53296f5b23baae34dc814295456a092718a4df5ef191f8fde4068a67e179e41d26ae5754a4787b277af14ebe0fdbcaf7da4b767b24931068cc9c9b9efab",
           "role": "manager",
           "active": true,
-          "createdAt": "2026-02-26T23:44:53.940Z",
-          "updatedAt": "2026-02-26T23:44:53.940Z"
+          "createdAt": "2026-03-04T23:52:34.837Z",
+          "updatedAt": "2026-03-04T23:52:34.837Z"
         }
       ],
       "projects": [
         {
-          "id": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
-          "name": "fabreu",
+          "id": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "name": "Fabreu",
           "network": {
-            "id": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
-            "name": "fabreu",
+            "id": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+            "name": "Fabreu",
             "cities": [],
             "pops": [],
             "boxes": [],
             "reserves": [],
             "cables": [],
             "fusions": [],
-            "createdAt": "2026-02-27T00:13:50.373Z",
-            "updatedAt": "2026-02-27T00:13:54.333Z"
+            "createdAt": "2026-03-04T23:52:56.113Z",
+            "updatedAt": "2026-03-04T23:54:13.613Z",
+            "description": "descrição"
           },
-          "createdAt": "2026-02-27T00:13:50.371Z",
-          "updatedAt": "2026-02-27T00:13:54.333Z",
-          "createdBy": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
-          "updatedBy": "5a1da4b4-5e3d-4664-abf3-1a99ae982195"
+          "createdAt": "2026-03-04T23:52:56.113Z",
+          "updatedAt": "2026-03-04T23:54:13.613Z",
+          "createdBy": "sys-root-admin",
+          "updatedBy": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "description": "descrição"
         }
       ],
       "auditLogs": [
         {
-          "id": "eaf00af2-039e-4978-a2fa-e21227455229",
-          "createdAt": "2026-02-27T00:13:54.340Z",
-          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "id": "d2aef306-df54-4803-b2a9-9619a2618024",
+          "createdAt": "2026-03-04T23:54:13.616Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
           "actorUsername": "wandson",
           "action": "projects.update",
           "targetType": "project",
-          "targetId": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
-          "details": "Projeto fabreu atualizado."
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
         },
         {
-          "id": "b40de2ec-694c-4558-a593-ea09c726199c",
-          "createdAt": "2026-02-27T00:13:50.378Z",
-          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
+          "id": "d501460b-debe-482d-bda4-20424359eb55",
+          "createdAt": "2026-03-04T23:53:55.000Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
           "actorUsername": "wandson",
-          "action": "projects.create",
+          "action": "auth.login",
+          "targetType": "session",
+          "targetId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "details": "Login do provedor realizado com sucesso."
+        },
+        {
+          "id": "02d69faa-9cce-410f-9a33-d74711257519",
+          "createdAt": "2026-03-04T23:53:15.662Z",
+          "actorUsername": "admin",
+          "action": "projects.update.system",
           "targetType": "project",
-          "targetId": "b379f3f0-cad6-4952-8f51-c4f839a9aa93",
-          "details": "Projeto fabreu criado."
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado pelo administrador global."
         },
         {
-          "id": "98140fe2-77a4-4435-a0f6-b20f1b2d56e0",
-          "createdAt": "2026-02-27T00:13:26.148Z",
-          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
-          "actorUsername": "wandson",
-          "action": "auth.login",
-          "targetType": "session",
-          "targetId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
-          "details": "Login do provedor realizado com sucesso."
-        },
-        {
-          "id": "e6e40371-3fed-4708-a5f6-572cd9eeba14",
-          "createdAt": "2026-02-26T23:48:20.199Z",
-          "actorUserId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
-          "actorUsername": "wandson",
-          "action": "auth.login",
-          "targetType": "session",
-          "targetId": "5a1da4b4-5e3d-4664-abf3-1a99ae982195",
-          "details": "Login do provedor realizado com sucesso."
+          "id": "223dab6a-b94a-4a89-9bd2-d5cd35f13c7e",
+          "createdAt": "2026-03-04T23:52:56.115Z",
+          "actorUsername": "admin",
+          "action": "projects.create.system",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu criado pelo administrador global."
         }
       ]
     }
   ],
   "systemAuditLogs": [
     {
-      "id": "605ec854-fd16-49df-bad9-3103d46c0fe7",
-      "createdAt": "2026-02-26T23:44:54.016Z",
+      "id": "2abca49f-7ee1-4d54-9e34-df0bed9043fe",
+      "createdAt": "2026-03-04T23:53:15.662Z",
+      "actorType": "system",
+      "actorId": "sys-root-admin",
+      "action": "providers.projects.update",
+      "targetType": "project",
+      "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+      "details": "Projeto Fabreu atualizado no provedor fabreu."
+    },
+    {
+      "id": "07075a65-0286-48ea-bf1f-8f65fb4b8734",
+      "createdAt": "2026-03-04T23:52:56.115Z",
+      "actorType": "system",
+      "actorId": "sys-root-admin",
+      "action": "providers.projects.create",
+      "targetType": "project",
+      "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+      "details": "Projeto Fabreu criado no provedor fabreu."
+    },
+    {
+      "id": "626ccae4-8939-4053-bc24-e51e7fde02d9",
+      "createdAt": "2026-03-04T23:52:34.933Z",
       "actorType": "system",
       "actorId": "sys-root-admin",
       "action": "providers.create",
       "targetType": "provider",
-      "targetId": "2072989f-60e5-4320-b442-845ee8890216",
-      "details": "Provedor Fabreu Telecom cadastrado."
-    },
-    {
-      "id": "9fe99d1e-00db-4920-b55e-f9fed3e8f314",
-      "createdAt": "2026-02-26T23:43:16.104Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "c13bfbe9-7e5f-47ff-80cb-527913fd6792",
-      "createdAt": "2026-02-26T23:42:38.138Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "03105c8b-a0c1-43c5-83f0-704e041229a7",
-      "createdAt": "2026-02-26T23:42:03.597Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "a493216f-df21-4697-88c5-6136a1835169",
-      "createdAt": "2026-02-26T23:40:27.662Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.delete",
-      "targetType": "provider",
-      "targetId": "prov-demo",
-      "details": "Provedor Provedor Demo removido."
-    },
-    {
-      "id": "cad03402-f108-4892-98e4-a3d3fddaf099",
-      "createdAt": "2026-02-26T23:40:25.677Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.delete",
-      "targetType": "provider",
-      "targetId": "prov-demo",
-      "details": "Provedor Provedor Demo removido."
-    },
-    {
-      "id": "1be96967-67b1-4634-8444-23eb9417178c",
-      "createdAt": "2026-02-26T23:37:11.129Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.delete",
-      "targetType": "provider",
-      "targetId": "prov-demo",
-      "details": "Provedor Provedor Demo removido."
-    },
-    {
-      "id": "abf6ba4d-0bf4-46e6-8a97-1f33deda6c44",
-      "createdAt": "2026-02-26T23:37:03.627Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.delete",
-      "targetType": "provider",
-      "targetId": "prov-lic-main",
-      "details": "Provedor FABREU TELECOM removido."
-    },
-    {
-      "id": "93a7d4ad-38ce-43b4-9f9e-6109fb1419f5",
-      "createdAt": "2026-02-26T23:36:59.375Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "6dc18285-e2c2-437e-aff2-e867d45ad39d",
-      "createdAt": "2026-02-26T23:35:38.432Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "eacc16a2-d323-455c-816b-42cc7678dcf0",
-      "createdAt": "2026-02-26T23:34:48.944Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "4b55e036-6272-4fd2-b280-383cff366a50",
-      "createdAt": "2026-02-26T23:26:41.610Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.authorize",
-      "targetType": "provider",
-      "targetId": "prov-lic-main",
-      "details": "Provedor FABREU TELECOM autorizado."
-    },
-    {
-      "id": "464f4ab3-e4e3-4b2b-8c79-ea2c2cd0fbfb",
-      "createdAt": "2026-02-26T23:26:36.122Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.revoke",
-      "targetType": "provider",
-      "targetId": "prov-lic-main",
-      "details": "Provedor FABREU TELECOM revogado/suspenso."
-    },
-    {
-      "id": "6205a1ea-1254-4ac7-958e-cbe29631fedf",
-      "createdAt": "2026-02-26T23:26:33.004Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "providers.license.update",
-      "targetType": "provider",
-      "targetId": "prov-lic-main",
-      "details": "Licenca do provedor FABREU TELECOM atualizada."
-    },
-    {
-      "id": "fe77f20a-0f67-4ad2-80af-f7b822e59d23",
-      "createdAt": "2026-02-26T23:26:09.661Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "d19195ab-4c26-4b7e-8203-1b505095ea9a",
-      "createdAt": "2026-02-26T23:23:52.423Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "90491cfa-67d8-4392-b53c-61b914d3b2a1",
-      "createdAt": "2026-02-26T23:19:53.230Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "766ef739-e2fc-40f0-8eed-78d074d2876c",
-      "createdAt": "2026-02-26T22:53:07.575Z",
-      "actorType": "system",
-      "actorId": "sys-root-admin",
-      "action": "system.auth.login",
-      "targetType": "session",
-      "targetId": "sys-root-admin",
-      "details": "Login global realizado."
-    },
-    {
-      "id": "45700ba3-9111-4cc5-aac8-c69a04e5e847",
-      "createdAt": "2026-02-26T22:49:15.879Z",
-      "actorType": "system",
-      "actorId": "migration",
-      "action": "db.migrate.v1_to_v2",
-      "targetType": "provider",
-      "targetId": "prov-lic-main",
-      "details": "Migracao concluida para o provedor FABREU TELECOM."
+      "targetId": "129e62c2-9b65-482c-a7f1-70d59c9d4162",
+      "details": "Provedor fabreu cadastrado."
     }
   ]
 }
