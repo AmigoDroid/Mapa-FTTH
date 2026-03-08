@@ -139,10 +139,12 @@
 
 .map-3d-cable-glow {
   filter: blur(0.6px);
+  cursor: default !important;
 }
 
 .map-3d-cable-core {
   filter: drop-shadow(0 3px 4px rgba(2, 6, 23, 0.42));
+  cursor: default !important;
 }
 
 .map-3d-cable-active {

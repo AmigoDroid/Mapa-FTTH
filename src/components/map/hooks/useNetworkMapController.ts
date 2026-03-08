@@ -74,6 +74,7 @@ export function useNetworkMapController() {
   const hasUserInteractedWithMapRef = useRef(false);
   const lastMapDragEndedAtRef = useRef(0);
   const lastMapZoomEndedAtRef = useRef(0);
+  const lastLayerInteractionAtRef = useRef(0);
   const satelliteTileErrorCountRef = useRef(0);
   const satelliteAutoZoomCooldownRef = useRef(false);
   const satelliteZoomFallbackNotifiedRef = useRef(false);
@@ -433,6 +434,12 @@ export function useNetworkMapController() {
     updateCable(cableId, { path: nextPath, attachments });
   }, [currentNetwork?.cables, updateCable]);
 
+  const markLayerInteraction = useCallback((event?: any) => {
+    lastLayerInteractionAtRef.current = Date.now();
+    const nativeEvent = event?.originalEvent ?? event;
+    nativeEvent?.stopPropagation?.();
+  }, []);
+
   useEffect(() => {
     const handlePointRequest = (event: Event) => {
       const custom = event as CustomEvent<MapPointRequestDetail>;
@@ -646,6 +653,8 @@ export function useNetworkMapController() {
     };
 
     map.on('dragstart', markMapInteraction);
+    map.on('mousedown', markMapInteraction);
+    map.on('touchstart', markMapInteraction);
     map.on('zoomstart', markMapInteraction);
     map.on('dragend', () => {
       lastMapDragEndedAtRef.current = Date.now();
@@ -670,6 +679,7 @@ export function useNetworkMapController() {
       const now = Date.now();
       if (now - lastMapDragEndedAtRef.current < 220) return;
       if (now - lastMapZoomEndedAtRef.current < 180) return;
+      if (now - lastLayerInteractionAtRef.current < 220) return;
 
       map.stop?.();
       hasUserInteractedWithMapRef.current = true;
@@ -1093,7 +1103,8 @@ export function useNetworkMapController() {
             <p style="margin: 4px 0;"><strong>VLANs:</strong> ${(pop.vlans || []).length}</p>
           </div>
         `, { className: 'map-3d-popup', autoPan: false });
-        marker.on('click', () => {
+        marker.on('click', (event: any) => {
+          markLayerInteraction(event);
           selectPop(pop);
         });
         if (isEditing) {
@@ -1134,7 +1145,8 @@ export function useNetworkMapController() {
       if (markerInteractivityEnabled) {
         marker.bindPopup(popupContent, { className: 'map-3d-popup', autoPan: false });
         
-        marker.on('click', () => {
+        marker.on('click', (event: any) => {
+          markLayerInteraction(event);
           selectBox(box);
         });
 
@@ -1151,6 +1163,7 @@ export function useNetworkMapController() {
         }
 
         marker.on('contextmenu', (e: any) => {
+          markLayerInteraction(e);
           const container = document.createElement('div');
           container.style.display = 'flex';
           container.style.gap = '8px';
@@ -1229,7 +1242,7 @@ export function useNetworkMapController() {
       }
       marker.addTo(markersLayer.current);
     });
-  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing, isDrawingMode]);
+  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing, isDrawingMode, markLayerInteraction]);
 
   // Atualizar cabos no mapa
   useEffect(() => {
@@ -1265,7 +1278,7 @@ export function useNetworkMapController() {
         lineCap: 'round',
         lineJoin: 'round',
         className: 'map-3d-cable-glow',
-        interactive: cableInteractivityEnabled,
+        interactive: false,
       });
 
       const polyline = L.polyline(path, {
@@ -1277,6 +1290,7 @@ export function useNetworkMapController() {
         lineJoin: 'round',
         className: `map-3d-cable-core ${cable.status === 'active' ? 'map-3d-cable-active' : ''}`,
         interactive: cableInteractivityEnabled,
+        bubblingMouseEvents: false,
       });
 
       if (cableInteractivityEnabled) {
@@ -1308,7 +1322,8 @@ export function useNetworkMapController() {
           };
         });
 
-        const handleSelectCableForAnalyzer = () => {
+        const handleSelectCableForAnalyzer = (event?: any) => {
+          markLayerInteraction(event);
           window.dispatchEvent(
             new CustomEvent<FiberAnalyzerSelectCableDetail>('ftth:fiber-analyzer-select-cable', {
               detail: { cableId: cable.id },
@@ -1316,13 +1331,12 @@ export function useNetworkMapController() {
           );
         };
         polyline.on('click', handleSelectCableForAnalyzer);
-        cableGlow.on('click', handleSelectCableForAnalyzer);
       }
 
       cableGlow.addTo(cablesLayer.current);
       polyline.addTo(cablesLayer.current);
     });
-  }, [currentNetwork?.cables, isMapReady, handleStartEditCablePath, resolveNetworkEndpointById, isDrawingMode]);
+  }, [currentNetwork?.cables, isMapReady, handleStartEditCablePath, resolveNetworkEndpointById, isDrawingMode, markLayerInteraction]);
 
   // Handlers para adicionar caixa
   const handleAddBox = () => {
