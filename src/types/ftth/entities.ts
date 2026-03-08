@@ -136,6 +136,7 @@ export interface PopSwitchPort {
   id: string;
   index: number;
   active: boolean;
+  connector: 'RJ45' | 'SFP' | 'SFP+';
 }
 
 export interface PopSwitch {
@@ -152,6 +153,7 @@ export interface PopRouterInterface {
   index: number;
   active: boolean;
   role: 'WAN' | 'LAN';
+  connector: 'RJ45' | 'SFP' | 'SFP+';
 }
 
 export interface PopRouter {
@@ -165,12 +167,13 @@ export interface PopRouter {
 export interface PopCable {
   id: string;
   name: string;
-  type: 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc';
+  type: 'pigtail' | 'bigtail' | 'backbone' | 'patchcord' | 'apc-upc';
   fiberCount: number;
   looseTubeCount?: number;
   fibersPerTube?: number;
   fibers: Fiber[];
   status: 'active' | 'inactive' | 'maintenance';
+  dioId?: string;
   linkedNetworkCableId?: string;
   mapEndpointRole?: 'incoming' | 'outgoing';
 }
@@ -185,6 +188,29 @@ export interface PopFusion {
   dateCreated: string;
 }
 
+export type PopVlanServiceType =
+  | 'internet'
+  | 'iptv'
+  | 'voip'
+  | 'management'
+  | 'transport'
+  | 'corporate';
+
+export type PopVlanMode = 'access' | 'trunk' | 'qinq';
+
+export interface PopVlan {
+  id: string;
+  vlanId: number;
+  name: string;
+  serviceType: PopVlanServiceType;
+  mode: PopVlanMode;
+  outerVlan?: number;
+  gateway?: string;
+  pppoeProfile?: string;
+  status: 'active' | 'planned' | 'retired';
+  notes?: string;
+}
+
 export interface Pop {
   id: string;
   cityId: string;
@@ -192,6 +218,7 @@ export interface Pop {
   position: Position;
   status: 'active' | 'inactive' | 'maintenance' | 'projected';
   fusionLayout?: Record<string, { x: number; y: number }>;
+  vlans?: PopVlan[];
   dios: PopDio[];
   olts: PopOlt[];
   switches: PopSwitch[];

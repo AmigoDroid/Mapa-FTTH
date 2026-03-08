@@ -19,9 +19,18 @@ import {
   getCableModelsByType,
   resolveDefaultCableModel,
 } from '@/types/ftth';
-import type { Cable, Pop, PopFusion } from '@/types/ftth';
+import type {
+  Cable,
+  Pop,
+  PopCable,
+  PopFusion,
+  PopVlan,
+  PopVlanMode,
+  PopVlanServiceType,
+} from '@/types/ftth';
 import { toast } from 'sonner';
-import { calculateDistanceMeters } from '@/store/networkUtils';
+import { calculateDistanceMeters, generateId } from '@/store/networkUtils';
+import { clearPopFusionFromCables } from '@/store/popEndpointUtils';
 
 interface PopDetailProps {
   pop: Pop;
@@ -60,6 +69,7 @@ type LinkConfigState = {
   fromId: string;
   toId: string;
   vlan: string;
+  vlanProfileId?: string;
   fusionId?: string;
 };
 
@@ -76,6 +86,21 @@ type MapCableTargetOption = {
   id: string;
   label: string;
   kind: 'box' | 'pop';
+};
+
+const VLAN_SERVICE_LABELS: Record<PopVlanServiceType, string> = {
+  internet: 'Internet',
+  iptv: 'IPTV',
+  voip: 'VoIP',
+  management: 'Gerencia',
+  transport: 'Transporte',
+  corporate: 'Corporativo',
+};
+
+const VLAN_MODE_LABELS: Record<PopVlanMode, string> = {
+  access: 'Access',
+  trunk: 'Trunk',
+  qinq: 'QinQ',
 };
 
 export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
@@ -96,6 +121,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     removeOltFromPop,
     removeSwitchFromPop,
     removeRouterFromPop,
+    addCableToPop,
     connectPopEndpoints,
     disconnectPopFusion,
   } = useNetworkStore();
@@ -140,12 +166,15 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
 
   const [cableName, setCableName] = useState('');
   const [cableFiberCount, setCableFiberCount] = useState(DEFAULT_CABLE_FIBER_COUNT);
+  const [bigtailDioId, setBigtailDioId] = useState('');
+  const [bigtailName, setBigtailName] = useState('');
+  const [bigtailFiberCount, setBigtailFiberCount] = useState(12);
   const [mapCableDirection, setMapCableDirection] = useState<'outgoing' | 'incoming'>('outgoing');
   const [editPositionLat, setEditPositionLat] = useState(() => pop.position.lat.toFixed(6));
   const [editPositionLng, setEditPositionLng] = useState(() => pop.position.lng.toFixed(6));
   const [mainTab, setMainTab] = useState<'infra' | 'fusions' | 'signal'>('infra');
   const [infraTab, setInfraTab] = useState<'dio' | 'olt' | 'switch' | 'router' | 'cable'>('dio');
-  const [rackFusionScope, setRackFusionScope] = useState<'all' | 'dio-bigtail'>('all');
+  const [rackFusionScope, setRackFusionScope] = useState<'all' | 'dio-pigtail'>('all');
   const [rackFusionDioId, setRackFusionDioId] = useState('');
   const [dioFusionOpen, setDioFusionOpen] = useState(false);
   const [dioFusionTargetId, setDioFusionTargetId] = useState('');
@@ -163,21 +192,67 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
   const [boardZoom, setBoardZoom] = useState(1);
   const [fusionViewportHeight, setFusionViewportHeight] = useState(520);
-  const [linkConfig, setLinkConfig] = useState<LinkConfigState>({ open: false, fromId: '', toId: '', vlan: '100' });
+  const [linkConfig, setLinkConfig] = useState<LinkConfigState>({ open: false, fromId: '', toId: '', vlan: '100', vlanProfileId: '' });
   const [ponConfig, setPonConfig] = useState<PonConfigState>({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: 'C++', txPowerDbm: '3' });
+  const [newVlanId, setNewVlanId] = useState('400');
+  const [newVlanName, setNewVlanName] = useState('');
+  const [newVlanServiceType, setNewVlanServiceType] = useState<PopVlanServiceType>('transport');
+  const [newVlanMode, setNewVlanMode] = useState<PopVlanMode>('access');
+  const [newVlanOuter, setNewVlanOuter] = useState('');
+  const [newVlanGateway, setNewVlanGateway] = useState('');
+  const [newVlanPppoe, setNewVlanPppoe] = useState('');
+  const [newVlanNotes, setNewVlanNotes] = useState('');
+  const [editingVlanId, setEditingVlanId] = useState('');
   const [sceneRenderTick, setSceneRenderTick] = useState(0);
   const sceneRef = useRef<HTMLDivElement | null>(null);
   const fusionViewportRef = useRef<HTMLDivElement | null>(null);
   const endpointRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const nodePositionsRef = useRef<Record<string, { x: number; y: number }>>({});
 
-  const rackScopeDioCableOptions = useMemo(
+  const internalBigtailCables = useMemo(
     () =>
       currentPop.cables.filter(
-        (cable) => cable.type === 'bigtail' || Boolean(cable.linkedNetworkCableId)
+        (cable) =>
+          (cable.type === 'pigtail' || cable.type === 'bigtail') &&
+          !cable.linkedNetworkCableId
       ),
     [currentPop.cables]
   );
+
+  const rackScopeDioCableOptions = useMemo(
+    () =>
+      currentPop.cables.filter((cable) => {
+        if (cable.linkedNetworkCableId) return true;
+        if (cable.type !== 'pigtail' && cable.type !== 'bigtail') return false;
+        if (!rackFusionDioId) return true;
+        return !cable.dioId || cable.dioId === rackFusionDioId;
+      }),
+    [currentPop.cables, rackFusionDioId]
+  );
+
+  const bigtailCountByDioId = useMemo(() => {
+    return internalBigtailCables.reduce<Record<string, number>>((acc, cable) => {
+      if (!cable.dioId) return acc;
+      acc[cable.dioId] = (acc[cable.dioId] || 0) + 1;
+      return acc;
+    }, {});
+  }, [internalBigtailCables]);
+
+  const bigtailFusionCountByCableId = useMemo(() => {
+    const counts = new Map<string, number>();
+    currentPop.fusions.forEach((fusion) => {
+      const pushEndpoint = (endpointId: string) => {
+        if (!endpointId.startsWith('cable:')) return;
+        const parts = endpointId.split(':');
+        const cableId = parts[1];
+        if (!cableId) return;
+        counts.set(cableId, (counts.get(cableId) || 0) + 1);
+      };
+      pushEndpoint(fusion.endpointAId);
+      pushEndpoint(fusion.endpointBId);
+    });
+    return counts;
+  }, [currentPop.fusions]);
 
   const entityOptions = useMemo<PopEntity[]>(() => {
     return [
@@ -275,7 +350,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
         items.push({
           id: `switch:${sw.id}:u:${port.index}`,
           entityId: `switch:${sw.id}`,
-          label: `SW ${sw.name} - Uplink ${port.index}`,
+          label: `SW ${sw.name} - Uplink ${port.index} (${port.connector || 'SFP+'})`,
           shortLabel: `UP${port.index}`,
           endpointType: 'switch-port',
           portId: port.id,
@@ -287,7 +362,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
         items.push({
           id: `switch:${sw.id}:p:${port.index}`,
           entityId: `switch:${sw.id}`,
-          label: `SW ${sw.name} - Porta ${port.index}`,
+          label: `SW ${sw.name} - Porta ${port.index} (${port.connector || 'RJ45'})`,
           shortLabel: `GE${port.index}`,
           endpointType: 'switch-port',
           portId: port.id,
@@ -302,7 +377,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
         items.push({
           id: `router:${router.id}:${iface.role.toLowerCase()}:${iface.index}`,
           entityId: `router:${router.id}`,
-          label: `RTR ${router.name} - ${iface.role} ${iface.index}`,
+          label: `RTR ${router.name} - ${iface.role} ${iface.index} (${iface.connector || (iface.role === 'WAN' ? 'SFP+' : 'RJ45')})`,
           shortLabel: `${iface.role}${iface.index}`,
           endpointType: 'router-iface',
           routerInterfaceId: iface.id,
@@ -345,7 +420,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, {}), [endpoints]);
 
   const rackEntityOptions = useMemo<PopEntity[]>(() => {
-    if (rackFusionScope !== 'dio-bigtail') return rackScopeAllEntityOptions;
+    if (rackFusionScope !== 'dio-pigtail') return rackScopeAllEntityOptions;
     const allowed = new Set<string>();
     if (rackFusionDioId) {
       allowed.add(`dio:${rackFusionDioId}`);
@@ -387,7 +462,16 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     if (!dioFusionTargetId) return [];
     const selectedDioEntityId = `dio:${dioFusionTargetId}`;
     const allowed = new Set<string>([selectedDioEntityId]);
-    currentPop.cables.forEach((cable) => allowed.add(`cable:${cable.id}`));
+    currentPop.cables.forEach((cable) => {
+      if (cable.linkedNetworkCableId) {
+        allowed.add(`cable:${cable.id}`);
+        return;
+      }
+      if (cable.type !== 'pigtail' && cable.type !== 'bigtail') return;
+      if (!cable.dioId || cable.dioId === dioFusionTargetId) {
+        allowed.add(`cable:${cable.id}`);
+      }
+    });
     return entityOptions.filter((entity) => allowed.has(entity.id));
   }, [dioFusionTargetId, currentPop.cables, entityOptions]);
 
@@ -445,6 +529,44 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     () => mapCableTargets.find((target) => target.id === mapCableTargetId) || null,
     [mapCableTargets, mapCableTargetId]
   );
+  const popVlans = useMemo(
+    () => [...(currentPop.vlans || [])].sort((a, b) => a.vlanId - b.vlanId),
+    [currentPop.vlans]
+  );
+  const vlanByProfileId = useMemo(
+    () =>
+      popVlans.reduce<Record<string, PopVlan>>((acc, vlan) => {
+        acc[vlan.id] = vlan;
+        return acc;
+      }, {}),
+    [popVlans]
+  );
+  const vlanByTag = useMemo(
+    () =>
+      popVlans.reduce<Record<number, PopVlan>>((acc, vlan) => {
+        if (!acc[vlan.vlanId]) acc[vlan.vlanId] = vlan;
+        return acc;
+      }, {}),
+    [popVlans]
+  );
+  const vlanUsageCount = useMemo(() => {
+    const usage = new Map<number, number>();
+    currentPop.fusions.forEach((fusion) => {
+      if (typeof fusion.vlan !== 'number') return;
+      usage.set(fusion.vlan, (usage.get(fusion.vlan) || 0) + 1);
+    });
+    return usage;
+  }, [currentPop.fusions]);
+  const unregisteredVlanIds = useMemo(() => {
+    const known = new Set(popVlans.map((vlan) => vlan.vlanId));
+    return Array.from(vlanUsageCount.keys())
+      .filter((vlanId) => !known.has(vlanId))
+      .sort((a, b) => a - b);
+  }, [popVlans, vlanUsageCount]);
+  const editingVlan = useMemo(
+    () => popVlans.find((vlan) => vlan.id === editingVlanId) || null,
+    [editingVlanId, popVlans]
+  );
 
   useEffect(() => {
     if (mapCableModelOptions.length === 0) return;
@@ -481,8 +603,20 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   }, [currentPop.dios, rackFusionDioId]);
 
   useEffect(() => {
+    if (currentPop.dios.length === 0) {
+      setBigtailDioId('');
+      return;
+    }
+    if (!bigtailDioId || !currentPop.dios.some((dio) => dio.id === bigtailDioId)) {
+      const defaultDio = currentPop.dios[0]!;
+      setBigtailDioId(defaultDio.id);
+      setBigtailFiberCount(Math.max(1, defaultDio.portCount));
+    }
+  }, [currentPop.dios, bigtailDioId]);
+
+  useEffect(() => {
     if (!selectedEndpointId) return;
-    if (rackFusionScope === 'dio-bigtail' && !rackEndpointById[selectedEndpointId]) {
+    if (rackFusionScope === 'dio-pigtail' && !rackEndpointById[selectedEndpointId]) {
       setSelectedEndpointId(null);
     }
   }, [rackFusionScope, rackEndpointById, selectedEndpointId]);
@@ -778,11 +912,15 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
         fromId: dragState.fromId,
         toId: targetId,
         vlan: '100',
+        vlanProfileId: '',
       });
       setDragState(null);
       return;
     }
-    connectPopEndpoints(currentPop.id, dragState.fromId, targetId, fusionType, noLoss, vlan);
+    const created = connectPopEndpoints(currentPop.id, dragState.fromId, targetId, fusionType, noLoss, vlan);
+    if (!created) {
+      toast.error('Ligacao nao permitida para este par de portas.');
+    }
     setDragState(null);
   };
 
@@ -850,17 +988,217 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
     });
   };
 
+  const resetLinkConfig = () =>
+    setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100', vlanProfileId: '' });
+
+  const handleSelectLinkVlanProfile = (profileId: string) => {
+    const vlanProfile = vlanByProfileId[profileId];
+    setLinkConfig((prev) => ({
+      ...prev,
+      vlanProfileId: profileId,
+      vlan: vlanProfile ? `${vlanProfile.vlanId}` : prev.vlan,
+    }));
+  };
+
+  const resetVlanForm = useCallback((nextVlanId: number = 400) => {
+    const bounded = Math.max(1, Math.min(4094, Math.trunc(nextVlanId || 400)));
+    setEditingVlanId('');
+    setNewVlanId(`${bounded}`);
+    setNewVlanName('');
+    setNewVlanServiceType('transport');
+    setNewVlanMode('access');
+    setNewVlanOuter('');
+    setNewVlanGateway('');
+    setNewVlanPppoe('');
+    setNewVlanNotes('');
+  }, []);
+
+  const handleStartEditPopVlan = useCallback((vlan: PopVlan) => {
+    setEditingVlanId(vlan.id);
+    setNewVlanId(`${vlan.vlanId}`);
+    setNewVlanName(vlan.name || '');
+    setNewVlanServiceType(vlan.serviceType);
+    setNewVlanMode(vlan.mode);
+    setNewVlanOuter(typeof vlan.outerVlan === 'number' ? `${vlan.outerVlan}` : '');
+    setNewVlanGateway(vlan.gateway || '');
+    setNewVlanPppoe(vlan.pppoeProfile || '');
+    setNewVlanNotes(vlan.notes || '');
+  }, []);
+
+  const handlePrepareUnregisteredVlan = useCallback((vlanId: number) => {
+    setEditingVlanId('');
+    setNewVlanId(`${vlanId}`);
+    setNewVlanName(`VLAN ${vlanId}`);
+    setNewVlanServiceType('transport');
+    setNewVlanMode('access');
+    setNewVlanOuter('');
+    setNewVlanGateway('');
+    setNewVlanPppoe('');
+    setNewVlanNotes('');
+    toast.message(`Formulario preparado para cadastrar a VLAN ${vlanId}.`);
+  }, []);
+
+  const handleRetagUnregisteredVlan = useCallback((sourceVlanId: number) => {
+    const affectedCount = currentPop.fusions.filter((fusion) => fusion.vlan === sourceVlanId).length;
+    if (affectedCount === 0) return;
+
+    const response = window.prompt(
+      `Nova tag para VLAN ${sourceVlanId} (${affectedCount} ligacao(oes)):`,
+      `${sourceVlanId}`
+    );
+    if (response === null) return;
+
+    const nextVlanId = Number.parseInt(response, 10);
+    if (!Number.isFinite(nextVlanId) || nextVlanId < 1 || nextVlanId > 4094) {
+      toast.error('VLAN invalida. Use um valor entre 1 e 4094.');
+      return;
+    }
+    if (nextVlanId === sourceVlanId) return;
+
+    updatePop(currentPop.id, {
+      fusions: currentPop.fusions.map((fusion) =>
+        fusion.vlan === sourceVlanId ? { ...fusion, vlan: nextVlanId } : fusion
+      ),
+    });
+
+    if (!vlanByTag[nextVlanId]) {
+      toast.warning(`Ligacoes movidas para VLAN ${nextVlanId}, ainda sem cadastro no POP.`);
+    } else {
+      toast.success(`Ligacoes da VLAN ${sourceVlanId} migradas para VLAN ${nextVlanId}.`);
+    }
+  }, [currentPop.fusions, currentPop.id, updatePop, vlanByTag]);
+
+  const handleSubmitPopVlan = () => {
+    const vlanId = Number.parseInt(newVlanId, 10);
+    if (!Number.isFinite(vlanId) || vlanId < 1 || vlanId > 4094) {
+      toast.error('VLAN invalida. Use um valor entre 1 e 4094.');
+      return;
+    }
+
+    const duplicate = (currentPop.vlans || []).some(
+      (vlan) => vlan.vlanId === vlanId && vlan.id !== editingVlanId
+    );
+    if (duplicate) {
+      toast.error(`A VLAN ${vlanId} ja existe neste POP.`);
+      return;
+    }
+
+    const outerVlanParsed = Number.parseInt(newVlanOuter, 10);
+    const outerVlan =
+      newVlanMode === 'qinq' && Number.isFinite(outerVlanParsed)
+        ? Math.max(1, Math.min(4094, outerVlanParsed))
+        : undefined;
+
+    const payload = {
+      vlanId,
+      name: newVlanName.trim() || `VLAN ${vlanId}`,
+      serviceType: newVlanServiceType,
+      mode: newVlanMode,
+      outerVlan,
+      gateway: newVlanGateway.trim() || undefined,
+      pppoeProfile: newVlanPppoe.trim() || undefined,
+      notes: newVlanNotes.trim() || undefined,
+    };
+
+    if (editingVlanId) {
+      const target = (currentPop.vlans || []).find((vlan) => vlan.id === editingVlanId);
+      if (!target) {
+        toast.error('A VLAN em edicao nao foi encontrada.');
+        resetVlanForm(vlanId);
+        return;
+      }
+
+      const previousVlanId = target.vlanId;
+      const usageCount = vlanUsageCount.get(previousVlanId) || 0;
+      let migratedFusions: PopFusion[] | null = null;
+
+      if (previousVlanId !== vlanId && usageCount > 0) {
+        const shouldMigrate = window.confirm(
+          `A VLAN ${previousVlanId} esta em ${usageCount} ligacao(oes). Atualizar essas ligacoes para VLAN ${vlanId}?`
+        );
+        if (shouldMigrate) {
+          migratedFusions = currentPop.fusions.map((fusion) =>
+            fusion.vlan === previousVlanId ? { ...fusion, vlan: vlanId } : fusion
+          );
+        }
+      }
+
+      updatePop(currentPop.id, {
+        vlans: (currentPop.vlans || [])
+          .map((vlan) =>
+            vlan.id === target.id
+              ? {
+                  ...vlan,
+                  ...payload,
+                }
+              : vlan
+          )
+          .sort((a, b) => a.vlanId - b.vlanId),
+        ...(migratedFusions ? { fusions: migratedFusions } : {}),
+      });
+
+      resetVlanForm(Math.min(4094, vlanId + 1));
+      toast.success(`VLAN ${vlanId} atualizada no POP.`);
+      return;
+    }
+
+    const nextVlan: PopVlan = {
+      id: generateId(),
+      ...payload,
+      status: 'active',
+    };
+
+    updatePop(currentPop.id, {
+      vlans: [...(currentPop.vlans || []), nextVlan].sort((a, b) => a.vlanId - b.vlanId),
+    });
+
+    resetVlanForm(Math.min(4094, vlanId + 1));
+    toast.success(`VLAN ${vlanId} cadastrada no POP.`);
+  };
+
+  const handleRemovePopVlan = (vlanId: number) => {
+    const editingTarget = (currentPop.vlans || []).find((vlan) => vlan.id === editingVlanId) || null;
+    const usageCount = vlanUsageCount.get(vlanId) || 0;
+    if (
+      usageCount > 0 &&
+      !window.confirm(
+        `A VLAN ${vlanId} esta aplicada em ${usageCount} ligacao(oes). Remover mesmo assim?`
+      )
+    ) {
+      return;
+    }
+
+    updatePop(currentPop.id, {
+      vlans: (currentPop.vlans || []).filter((vlan) => vlan.vlanId !== vlanId),
+    });
+    if (editingTarget && editingTarget.vlanId === vlanId) {
+      resetVlanForm(Math.min(4094, vlanId + 1));
+    }
+    toast.success(`VLAN ${vlanId} removida do POP.`);
+  };
+
   const handleSaveLinkConfig = () => {
     const parsed = Number.parseInt(linkConfig.vlan, 10);
-    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 4094) return;
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 4094) {
+      toast.error('VLAN invalida. Use um valor entre 1 e 4094.');
+      return;
+    }
     if (linkConfig.fusionId) {
       updatePop(currentPop.id, {
         fusions: currentPop.fusions.map((fusion) => (fusion.id === linkConfig.fusionId ? { ...fusion, vlan: parsed } : fusion)),
       });
     } else {
-      connectPopEndpoints(currentPop.id, linkConfig.fromId, linkConfig.toId, fusionType, noLoss, parsed);
+      const created = connectPopEndpoints(currentPop.id, linkConfig.fromId, linkConfig.toId, fusionType, noLoss, parsed);
+      if (!created) {
+        toast.error('Nao foi possivel conectar esses endpoints.');
+        return;
+      }
     }
-    setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' });
+
+    if (!vlanByTag[parsed]) {
+      toast.warning(`VLAN ${parsed} sem cadastro no inventario logico do POP.`);
+    }
+    resetLinkConfig();
   };
 
   const handleSavePonConfig = () => {
@@ -871,11 +1209,13 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
   };
 
   const handleOpenFusionEdit = (fusion: PopFusion) => {
+    const matchedProfile = typeof fusion.vlan === 'number' ? popVlans.find((item) => item.vlanId === fusion.vlan) : null;
     setLinkConfig({
       open: true,
       fromId: fusion.endpointAId,
       toId: fusion.endpointBId,
       vlan: `${fusion.vlan ?? 100}`,
+      vlanProfileId: matchedProfile?.id || '',
       fusionId: fusion.id,
     });
   };
@@ -954,6 +1294,92 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       : 'Destino no mapa (caixa ou POP) - opcional';
 
   const mapEndpointRequired = mapCableDirection === 'incoming';
+
+  const handleAddBigtailCable = useCallback(() => {
+    if (!bigtailDioId) {
+      toast.error('Selecione um DIO para cadastrar o PIGTAIL.');
+      return;
+    }
+
+    const targetDio = currentPop.dios.find((dio) => dio.id === bigtailDioId);
+    if (!targetDio) {
+      toast.error('DIO selecionado nao encontrado.');
+      return;
+    }
+
+    const safeFiberCount = Math.max(
+      1,
+      Math.min(
+        432,
+        Number.isFinite(bigtailFiberCount) ? Math.trunc(bigtailFiberCount) : targetDio.portCount
+      )
+    );
+    const fibersPerTube = 12;
+    const looseTubeCount = Math.max(1, Math.ceil(safeFiberCount / fibersPerTube));
+    const existingForDio = internalBigtailCables.filter((cable) => cable.dioId === targetDio.id).length;
+    const generatedName = `${targetDio.name} PIGTAIL-${String(existingForDio + 1).padStart(2, '0')}`;
+    const finalName = bigtailName.trim() || generatedName;
+
+    const created = addCableToPop(currentPop.id, {
+      name: finalName,
+      type: 'pigtail',
+      fiberCount: safeFiberCount,
+      looseTubeCount,
+      fibersPerTube,
+      status: 'active',
+      dioId: targetDio.id,
+    });
+
+    if (!created) {
+      toast.error('Nao foi possivel cadastrar o PIGTAIL.');
+      return;
+    }
+
+    setBigtailName('');
+    setBigtailFiberCount(Math.max(1, targetDio.portCount));
+    setRackFusionScope('dio-pigtail');
+    setRackFusionDioId(targetDio.id);
+    toast.success(`PIGTAIL ${finalName} criado para ${targetDio.name}.`);
+  }, [addCableToPop, bigtailDioId, bigtailFiberCount, bigtailName, currentPop.dios, currentPop.id, internalBigtailCables]);
+
+  const handleRemoveBigtailCable = useCallback((cable: PopCable) => {
+    if (cable.linkedNetworkCableId) {
+      toast.error('Cabos espelhados do mapa devem ser removidos pela tela de mapa.');
+      return;
+    }
+
+    const endpointPrefix = `cable:${cable.id}:`;
+    const relatedFusions = currentPop.fusions.filter(
+      (fusion) =>
+        fusion.endpointAId.startsWith(endpointPrefix) || fusion.endpointBId.startsWith(endpointPrefix)
+    );
+
+    if (
+      relatedFusions.length > 0 &&
+      !window.confirm(
+        `O PIGTAIL "${cable.name}" possui ${relatedFusions.length} ligacao(oes). Remover mesmo assim?`
+      )
+    ) {
+      return;
+    }
+
+    let nextCables = currentPop.cables;
+    relatedFusions.forEach((fusion) => {
+      nextCables = clearPopFusionFromCables(nextCables, fusion.id);
+    });
+    const relatedFusionIds = new Set(relatedFusions.map((fusion) => fusion.id));
+    const nextFusionLayout = { ...(currentPop.fusionLayout || {}) };
+    delete nextFusionLayout[`cable:${cable.id}`];
+
+    updatePop(currentPop.id, {
+      cables: nextCables.filter((item) => item.id !== cable.id),
+      fusions: currentPop.fusions.filter((fusion) => !relatedFusionIds.has(fusion.id)),
+      fusionLayout: nextFusionLayout,
+    });
+
+    setSelectedEndpointId((prev) => (prev && prev.startsWith(endpointPrefix) ? null : prev));
+    toast.success(`PIGTAIL ${cable.name} removido.`);
+  }, [currentPop.cables, currentPop.fusionLayout, currentPop.fusions, currentPop.id, updatePop]);
 
   const resolveMapEntityPosition = useCallback(
     (entityId: string) => {
@@ -1195,25 +1621,144 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     setDioName('');
                   }}>Adicionar DIO</Button>
                   {currentPop.dios.length > 0 && (
-                    <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
-                      <p className="text-xs font-medium text-slate-700">Fusao DIO x Cabos</p>
-                      <p className="text-xs text-slate-500">
-                        Abra a tela de fusoes no mesmo esquema visual das caixas, focada no DIO selecionado.
-                      </p>
-                      <div className="space-y-2">
-                        {currentPop.dios.map((dio) => (
-                          <div key={dio.id} className="flex items-center justify-between rounded border bg-white px-2 py-1.5">
-                            <div>
-                              <p className="text-sm font-medium">{dio.name}</p>
-                              <p className="text-xs text-gray-500">{dio.portCount} portas</p>
+                    <>
+                      <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+                        <p className="text-xs font-medium text-slate-700">Fusao DIO x Cabos</p>
+                        <p className="text-xs text-slate-500">
+                          Abra a tela de fusoes no mesmo esquema visual das caixas, focada no DIO selecionado.
+                        </p>
+                        <div className="space-y-2">
+                          {currentPop.dios.map((dio) => (
+                            <div key={dio.id} className="flex items-center justify-between rounded border bg-white px-2 py-1.5">
+                              <div>
+                                <p className="text-sm font-medium">{dio.name}</p>
+                                <p className="text-xs text-gray-500">
+                                  {dio.portCount} portas | PIGTAILs: {bigtailCountByDioId[dio.id] || 0}
+                                </p>
+                              </div>
+                              <Button size="sm" variant="outline" onClick={() => openDioFusionWorkspace(dio.id)}>
+                                Abrir Fusoes
+                              </Button>
                             </div>
-                            <Button size="sm" variant="outline" onClick={() => openDioFusionWorkspace(dio.id)}>
-                              Abrir Fusoes
-                            </Button>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
-                    </div>
+
+                      <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
+                        <div>
+                          <p className="text-xs font-medium text-slate-700">Cadastro de PIGTAIL por DIO</p>
+                          <p className="text-xs text-slate-500">
+                            Crie PIGTAILs internos para documentar fibra a fibra no DIO e facilitar controle de fusao.
+                          </p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div>
+                            <Label>DIO alvo</Label>
+                            <Select
+                              value={bigtailDioId || '__none__'}
+                              onValueChange={(value) => {
+                                const nextDioId = value === '__none__' ? '' : value;
+                                setBigtailDioId(nextDioId);
+                                const selectedDio = currentPop.dios.find((dio) => dio.id === nextDioId);
+                                if (selectedDio) {
+                                  setBigtailFiberCount(Math.max(1, selectedDio.portCount));
+                                }
+                              }}
+                            >
+                              <SelectTrigger><SelectValue placeholder="Selecione um DIO" /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__none__">Selecione</SelectItem>
+                                {currentPop.dios.map((dio) => (
+                                  <SelectItem key={dio.id} value={dio.id}>
+                                    {dio.name} ({dio.portCount} portas)
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <Label>Nome do PIGTAIL</Label>
+                            <Input
+                              value={bigtailName}
+                              onChange={(event) => setBigtailName(event.target.value)}
+                              placeholder="Auto: DIO PIGTAIL-01"
+                            />
+                          </div>
+                          <div>
+                            <Label>Fibras</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={432}
+                              value={bigtailFiberCount}
+                              onChange={(event) =>
+                                setBigtailFiberCount(
+                                  Math.max(1, Number.parseInt(event.target.value || '1', 10))
+                                )
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button onClick={handleAddBigtailCable} disabled={!bigtailDioId}>
+                            Adicionar PIGTAIL
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-white p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-medium text-slate-700">PIGTAILs internos do POP</p>
+                          <Badge variant="outline">{internalBigtailCables.length}</Badge>
+                        </div>
+                        {internalBigtailCables.length === 0 ? (
+                          <div className="rounded border border-dashed px-3 py-4 text-center text-xs text-slate-500">
+                            Nenhum PIGTAIL interno cadastrado.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {internalBigtailCables.map((cable) => {
+                              const targetDio = cable.dioId
+                                ? currentPop.dios.find((dio) => dio.id === cable.dioId) || null
+                                : null;
+                              const fusionCount = bigtailFusionCountByCableId.get(cable.id) || 0;
+                              return (
+                                <div key={cable.id} className="flex items-center justify-between rounded border bg-slate-50 px-2 py-1.5">
+                                  <div>
+                                    <p className="text-sm font-medium">{cable.name}</p>
+                                    <p className="text-xs text-gray-500">
+                                      {targetDio ? targetDio.name : 'Sem DIO vinculado'} | {cable.fiberCount} fibras | {fusionCount} ligacoes
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        const selectedDioId =
+                                          targetDio?.id || currentPop.dios[0]?.id || '';
+                                        if (!selectedDioId) return;
+                                        openDioFusionWorkspace(selectedDioId);
+                                      }}
+                                    >
+                                      Fusoes
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="destructive"
+                                      onClick={() => handleRemoveBigtailCable(cable)}
+                                      title="Remover PIGTAIL"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </>
                   )}
                 </TabsContent>
 
@@ -1230,7 +1775,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     <div><Label>Portas BOOT</Label><Input type="number" min={0} value={oltBootPorts} onChange={(e) => setOltBootPorts(Math.max(0, Number.parseInt(e.target.value || '0', 10)))} /></div>
                     <div><Label>Portas CONSOLE</Label><Input type="number" min={0} value={oltConsolePorts} onChange={(e) => setOltConsolePorts(Math.max(0, Number.parseInt(e.target.value || '0', 10)))} /></div>
                   </div>
-                  <p className="text-xs text-zinc-500">Conector do PON fixo em UPC.</p>
+                  <p className="text-xs text-zinc-500">Conector do PON fixo em SC/APC.</p>
                   <Button onClick={() => {
                     if (!oltName.trim()) return;
                     const created = addOltToPop(currentPop.id, {
@@ -1252,6 +1797,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     <div><Label>Portas de acesso</Label><Input type="number" min={1} value={switchPorts} onChange={(e) => setSwitchPorts(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
                     <div><Label>Portas Uplink</Label><Input type="number" min={1} value={switchUplinks} onChange={(e) => setSwitchUplinks(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
                   </div>
+                  <p className="text-xs text-zinc-500">Portas de acesso sao RJ45 (eletricas). Uplinks sao SFP+ (opticos).</p>
                   <Button onClick={() => {
                     if (!switchName.trim()) return;
                     const created = addSwitchToPop(currentPop.id, { name: switchName.trim(), portCount: switchPorts, uplinkPortCount: switchUplinks });
@@ -1267,6 +1813,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     <div><Label>Interfaces WAN</Label><Input type="number" min={1} value={routerWanCount} onChange={(e) => setRouterWanCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
                     <div><Label>Interfaces LAN</Label><Input type="number" min={1} value={routerLanCount} onChange={(e) => setRouterLanCount(Math.max(1, Number.parseInt(e.target.value || '1', 10)))} /></div>
                   </div>
+                  <p className="text-xs text-zinc-500">Interfaces WAN sao SFP+ (opticas). Interfaces LAN sao RJ45 (eletricas).</p>
                   <Button onClick={() => {
                     if (!routerName.trim()) return;
                     const created = addRouterToPop(currentPop.id, { name: routerName.trim(), wanCount: routerWanCount, lanCount: routerLanCount });
@@ -1331,15 +1878,15 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 <div className="grid gap-3 md:grid-cols-3">
                   <div>
                     <Label>Escopo da tela de fusoes</Label>
-                        <Select value={rackFusionScope} onValueChange={(v: 'all' | 'dio-bigtail') => setRackFusionScope(v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Rack completo (POP)</SelectItem>
-                        <SelectItem value="dio-bigtail">Somente DIO x Bigtail</SelectItem>
-                      </SelectContent>
-                    </Select>
+                        <Select value={rackFusionScope} onValueChange={(v: 'all' | 'dio-pigtail') => setRackFusionScope(v)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Rack completo (POP)</SelectItem>
+                        <SelectItem value="dio-pigtail">Somente DIO x Pigtail</SelectItem>
+                          </SelectContent>
+                        </Select>
                   </div>
-                  {rackFusionScope === 'dio-bigtail' && (
+                  {rackFusionScope === 'dio-pigtail' && (
                     <div>
                       <Label>DIO alvo</Label>
                       <Select value={rackFusionDioId || '__none__'} onValueChange={(v) => setRackFusionDioId(v === '__none__' ? '' : v)}>
@@ -1356,9 +1903,9 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                     </div>
                   )}
                 </div>
-                {rackFusionScope === 'dio-bigtail' && rackScopeDioCableOptions.length === 0 && (
+                {rackFusionScope === 'dio-pigtail' && rackScopeDioCableOptions.length === 0 && (
                   <p className="text-xs text-amber-700 mt-2">
-                    Nenhum cabo bigtail ou cabo de mapa vinculado encontrado para fusionar no DIO.
+                    Nenhum cabo pigtail ou cabo de mapa vinculado encontrado para fusionar no DIO.
                   </p>
                 )}
               </div>
@@ -1786,7 +2333,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                             variant="destructive"
                             className="h-6 w-6 p-0 rounded-full shadow"
                             onClick={() => disconnectPopFusion(currentPop.id, fusion.id)}
-                            title="Cortar ligaÃ§Ã£o"
+                            title="Cortar ligacao"
                           >
                             <Scissors className="h-3.5 w-3.5" />
                           </Button>
@@ -1803,6 +2350,223 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Tx medio GBIC</p><p className="text-2xl font-semibold">{avgTxDbm.toFixed(2)} dBm</p></div>
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Perda total POP</p><p className="text-2xl font-semibold">{totalFusionLoss.toFixed(2)} dB</p></div>
                 <div className="rounded-lg border p-3"><p className="text-xs text-gray-500">Rx estimado</p><p className="text-2xl font-semibold">{estimatedRxDbm.toFixed(2)} dBm</p></div>
+              </div>
+              <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold">Cadastro logico de VLAN</p>
+                    <p className="text-xs text-gray-500">
+                      Documente VLANs de servico, transporte e gerencia para rastrear o plano L2 do POP.
+                    </p>
+                  </div>
+                  {editingVlan && (
+                    <div className="rounded border border-cyan-300 bg-cyan-50 px-3 py-2 text-xs text-cyan-900">
+                      Editando VLAN {editingVlan.vlanId} ({editingVlan.name}).
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>VLAN ID</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={4094}
+                        value={newVlanId}
+                        onChange={(event) => setNewVlanId(event.target.value)}
+                        placeholder="100"
+                      />
+                    </div>
+                    <div>
+                      <Label>Servico</Label>
+                      <Select
+                        value={newVlanServiceType}
+                        onValueChange={(value: PopVlanServiceType) => setNewVlanServiceType(value)}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="internet">Internet</SelectItem>
+                          <SelectItem value="iptv">IPTV</SelectItem>
+                          <SelectItem value="voip">VoIP</SelectItem>
+                          <SelectItem value="management">Gerencia</SelectItem>
+                          <SelectItem value="transport">Transporte</SelectItem>
+                          <SelectItem value="corporate">Corporativo</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Nome da VLAN</Label>
+                    <Input
+                      value={newVlanName}
+                      onChange={(event) => setNewVlanName(event.target.value)}
+                      placeholder="Ex: Internet PPPoE"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Modo</Label>
+                      <Select value={newVlanMode} onValueChange={(value: PopVlanMode) => setNewVlanMode(value)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="access">Access</SelectItem>
+                          <SelectItem value="trunk">Trunk</SelectItem>
+                          <SelectItem value="qinq">QinQ</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>S-VLAN (QinQ)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={4094}
+                        value={newVlanOuter}
+                        disabled={newVlanMode !== 'qinq'}
+                        onChange={(event) => setNewVlanOuter(event.target.value)}
+                        placeholder="2000"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Gateway</Label>
+                      <Input
+                        value={newVlanGateway}
+                        onChange={(event) => setNewVlanGateway(event.target.value)}
+                        placeholder="10.0.100.1/24"
+                      />
+                    </div>
+                    <div>
+                      <Label>Perfil PPPoE</Label>
+                      <Input
+                        value={newVlanPppoe}
+                        onChange={(event) => setNewVlanPppoe(event.target.value)}
+                        placeholder="DEFAULT"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Observacoes</Label>
+                    <Input
+                      value={newVlanNotes}
+                      onChange={(event) => setNewVlanNotes(event.target.value)}
+                      placeholder="Ex: Trunk no uplink principal"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button onClick={handleSubmitPopVlan}>
+                      {editingVlan ? 'Salvar VLAN' : 'Adicionar VLAN'}
+                    </Button>
+                    {editingVlan && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => resetVlanForm(Math.min(4094, editingVlan.vlanId + 1))}
+                      >
+                        Cancelar edicao
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold">Inventario de VLAN do POP</p>
+                      <p className="text-xs text-gray-500">
+                        Uso automatico calculado a partir das ligacoes no rack POP.
+                      </p>
+                    </div>
+                    <Badge variant="outline">{popVlans.length} VLANs</Badge>
+                  </div>
+                  {unregisteredVlanIds.length > 0 && (
+                    <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 space-y-2">
+                      <p>VLANs usadas sem cadastro no POP.</p>
+                      <div className="flex flex-wrap gap-2">
+                        {unregisteredVlanIds.map((vlanId) => (
+                          <div key={vlanId} className="inline-flex items-center gap-1 rounded border border-amber-300 bg-white/80 px-2 py-1">
+                            <span className="font-medium">VLAN {vlanId}</span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              onClick={() => handlePrepareUnregisteredVlan(vlanId)}
+                            >
+                              Cadastrar
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              onClick={() => handleRetagUnregisteredVlan(vlanId)}
+                            >
+                              Retag
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {popVlans.length === 0 ? (
+                    <div className="rounded border border-dashed p-6 text-center text-sm text-gray-500">
+                      Nenhuma VLAN cadastrada.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {popVlans.map((vlan) => (
+                        <div key={vlan.id} className="rounded border bg-white px-3 py-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <Badge variant="secondary">VLAN {vlan.vlanId}</Badge>
+                                <Badge variant="outline">{VLAN_SERVICE_LABELS[vlan.serviceType]}</Badge>
+                                <Badge variant="outline">{VLAN_MODE_LABELS[vlan.mode]}</Badge>
+                                {typeof vlan.outerVlan === 'number' && (
+                                  <Badge variant="outline">S-VLAN {vlan.outerVlan}</Badge>
+                                )}
+                              </div>
+                              <p className="text-sm font-medium">{vlan.name}</p>
+                              <p className="text-xs text-gray-500">
+                                Uso em ligacoes: {vlanUsageCount.get(vlan.vlanId) || 0}
+                              </p>
+                              {(vlan.gateway || vlan.pppoeProfile || vlan.notes) && (
+                                <p className="text-xs text-gray-600">
+                                  {[vlan.gateway, vlan.pppoeProfile ? `PPPoE: ${vlan.pppoeProfile}` : null, vlan.notes]
+                                    .filter((item): item is string => Boolean(item))
+                                    .join(' | ')}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-cyan-700"
+                                onClick={() => handleStartEditPopVlan(vlan)}
+                                title="Editar VLAN"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-red-600"
+                                onClick={() => handleRemovePopVlan(vlan.vlanId)}
+                                title="Remover VLAN"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </TabsContent>
           </Tabs>
@@ -1910,14 +2674,25 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                         if (entity.type === 'cable') {
                           const cable = currentPop.cables.find((item) => `cable:${item.id}` === entity.id);
                           if (!cable) return null;
+                          const cableDio = cable.dioId
+                            ? currentPop.dios.find((dio) => dio.id === cable.dioId) || null
+                            : null;
+                          const cableRoleLabel = cable.linkedNetworkCableId ? 'CABO MAPA' : 'CABO PIGTAIL';
                           return (
                             <div key={entity.id} className="absolute w-[360px] rounded-xl border border-zinc-900 bg-gradient-to-b from-zinc-100 to-zinc-300 shadow-[0_10px_24px_rgba(0,0,0,0.45)]" style={{ left: pos.x, top: pos.y }}>
                               <div className="h-4 rounded-t-xl bg-gradient-to-b from-zinc-900 to-zinc-700 cursor-move select-none" onMouseDown={(event) => { event.preventDefault(); startNodeDrag(entity.id, event); }} />
                               <div className="h-1.5 bg-zinc-800/85 shadow-inner" />
                               <div className="border-x-4 border-b-4 border-zinc-900 rounded-b-lg bg-gradient-to-b from-white to-zinc-100 px-3 py-3">
-                                <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-zinc-700">
-                                  <span>CABO BIGTAIL - {entity.label}</span>
-                                  <span>{cable.fiberCount} fibras</span>
+                                <div className="mb-2 space-y-1 text-[11px] font-semibold text-zinc-700">
+                                  <div className="flex items-center justify-between">
+                                    <span>{cableRoleLabel} - {entity.label}</span>
+                                    <span>{cable.fiberCount} fibras</span>
+                                  </div>
+                                  {cableDio && (
+                                    <p className="text-[10px] font-medium text-zinc-500">
+                                      Vinculado ao DIO {cableDio.name}
+                                    </p>
+                                  )}
                                 </div>
                                 <div className="flex flex-wrap gap-1.5">
                                   {entityEndpoints.map((endpoint) => (
@@ -1976,7 +2751,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
       </Dialog>
 
       <Dialog open={linkConfig.open} onOpenChange={(isOpen) => {
-        if (!isOpen) setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' });
+        if (!isOpen) resetLinkConfig();
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1988,18 +2763,66 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
               <p><strong>Porta B:</strong> {endpointById[linkConfig.toId]?.label || linkConfig.toId}</p>
             </div>
             <div>
+              <Label>Perfil de VLAN (catalogo do POP)</Label>
+              <Select
+                value={linkConfig.vlanProfileId || '__none__'}
+                onValueChange={(value) =>
+                  handleSelectLinkVlanProfile(value === '__none__' ? '' : value)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um perfil existente" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sem perfil (manual)</SelectItem>
+                  {popVlans.map((vlan) => (
+                    <SelectItem key={vlan.id} value={vlan.id}>
+                      VLAN {vlan.vlanId} - {vlan.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>VLAN</Label>
               <Input
                 type="number"
                 min={1}
                 max={4094}
                 value={linkConfig.vlan}
-                onChange={(event) => setLinkConfig((prev) => ({ ...prev, vlan: event.target.value }))}
+                onChange={(event) =>
+                  setLinkConfig((prev) => {
+                    const nextVlanValue = event.target.value;
+                    const selectedProfile = prev.vlanProfileId ? vlanByProfileId[prev.vlanProfileId] : null;
+                    const keepProfile =
+                      selectedProfile && `${selectedProfile.vlanId}` === nextVlanValue;
+                    return {
+                      ...prev,
+                      vlan: nextVlanValue,
+                      vlanProfileId: keepProfile ? prev.vlanProfileId : '',
+                    };
+                  })
+                }
                 placeholder="Ex: 100"
               />
             </div>
+            {linkConfig.vlanProfileId && vlanByProfileId[linkConfig.vlanProfileId] && (
+              <div className="rounded border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs text-cyan-900 space-y-1">
+                <p>
+                  <strong>Servico:</strong>{' '}
+                  {VLAN_SERVICE_LABELS[vlanByProfileId[linkConfig.vlanProfileId]!.serviceType]}
+                </p>
+                <p>
+                  <strong>Modo:</strong>{' '}
+                  {VLAN_MODE_LABELS[vlanByProfileId[linkConfig.vlanProfileId]!.mode]}
+                  {typeof vlanByProfileId[linkConfig.vlanProfileId]!.outerVlan === 'number'
+                    ? ` | S-VLAN ${vlanByProfileId[linkConfig.vlanProfileId]!.outerVlan}`
+                    : ''}
+                </p>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setLinkConfig({ open: false, fromId: '', toId: '', vlan: '100' })}>Cancelar</Button>
+              <Button variant="outline" onClick={resetLinkConfig}>Cancelar</Button>
               <Button onClick={handleSaveLinkConfig}>{linkConfig.fusionId ? 'Salvar' : 'Conectar'}</Button>
             </div>
           </div>
@@ -2030,7 +2853,7 @@ export function PopDetail({ pop, open, onOpenChange }: PopDetailProps) {
                 onChange={(event) => setPonConfig((prev) => ({ ...prev, txPowerDbm: event.target.value }))}
               />
             </div>
-            <p className="text-xs text-zinc-500">Conector fixo: UPC</p>
+            <p className="text-xs text-zinc-500">Conector fixo: SC/APC</p>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setPonConfig({ open: false, oltId: '', slotId: '', ponId: '', gbicModel: gbicModel || 'C++', txPowerDbm: `${txPowerDbm || 3}` })}>Cancelar</Button>
               <Button onClick={handleSavePonConfig}>Salvar</Button>

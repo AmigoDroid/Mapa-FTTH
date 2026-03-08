@@ -45,6 +45,7 @@ describe('networkImportUtils', () => {
           switches: [],
           routers: [],
           cables: [],
+          vlans: undefined,
           fusions: [],
         },
       ],
@@ -67,7 +68,8 @@ describe('networkImportUtils', () => {
     expect(slot?.index).toBe(1);
     expect(pon?.index).toBe(1);
     expect(pon?.active).toBe(false);
-    expect(pon?.gbic.connector).toBe('UPC');
+    expect(pon?.gbic.connector).toBe('APC');
+    expect(normalized.pops[0]?.vlans).toEqual([]);
   });
 
   it('normalizeImportedNetwork preserva uplink existente e saneia cabos', () => {
@@ -106,6 +108,11 @@ describe('networkImportUtils', () => {
               status: 'active',
             },
           ],
+          vlans: [
+            { id: 'vlan-1', vlanId: 100, name: 'Internet', serviceType: 'internet', mode: 'qinq', outerVlan: 2000, status: 'active' },
+            { id: 'vlan-2', vlanId: 100, name: 'Duplicada', serviceType: 'iptv', mode: 'access', status: 'active' },
+            { id: 'vlan-3', vlanId: 5000, name: 'Fora de faixa', serviceType: 'transport', mode: 'trunk', status: 'active' },
+          ],
           fusions: [],
         },
       ],
@@ -143,6 +150,10 @@ describe('networkImportUtils', () => {
     expect(olt?.uplinks[0]?.index).toBe(1);
     expect(olt?.uplinks[0]?.connector).toBe('SFP+');
     expect(olt?.uplinks[0]?.speed).toBe('10G');
+    expect(normalized.pops[0]?.vlans).toHaveLength(2);
+    expect(normalized.pops[0]?.vlans?.[0]?.vlanId).toBe(100);
+    expect(normalized.pops[0]?.vlans?.[1]?.vlanId).toBe(4094);
+    expect(normalized.pops[0]?.cables[0]?.type).toBe('pigtail');
 
     expect(networkCable?.model).toBe(resolveDefaultCableModel('distribution'));
     expect(networkCable?.attachments).toEqual([]);
@@ -150,5 +161,67 @@ describe('networkImportUtils', () => {
     expect(networkCable?.fibersPerTube).toBe(12);
     expect(networkCable?.looseTubeCount).toBe(1);
     expect(networkCable?.fibers[12]?.tubeNumber).toBe(2);
+  });
+
+  it('normalizeImportedNetwork remove vinculo de DIO invalido em PIGTAIL', () => {
+    const raw = {
+      id: 'net-3',
+      name: 'Rede 3',
+      cities: [],
+      pops: [
+        {
+          id: 'pop-1',
+          cityId: 'city-1',
+          name: 'POP 1',
+          position: { lat: -15, lng: -47 },
+          status: 'active',
+          dios: [{ id: 'dio-1', name: 'DIO 1', portCount: 24 }],
+          olts: [],
+          switches: [],
+          routers: [],
+          cables: [
+            {
+              id: 'pop-cab-1',
+              name: 'PIGTAIL valido',
+              type: 'bigtail',
+              fiberCount: 1,
+              fibersPerTube: 12,
+              looseTubeCount: 1,
+              fibers: [makeFiber('pop-fib-1', 1)],
+              status: 'active',
+              dioId: 'dio-1',
+            },
+            {
+              id: 'pop-cab-2',
+              name: 'PIGTAIL invalido',
+              type: 'bigtail',
+              fiberCount: 1,
+              fibersPerTube: 12,
+              looseTubeCount: 1,
+              fibers: [makeFiber('pop-fib-2', 1)],
+              status: 'active',
+              dioId: 'dio-inexistente',
+            },
+          ],
+          vlans: [],
+          fusions: [],
+        },
+      ],
+      boxes: [],
+      reserves: [],
+      cables: [],
+      fusions: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as unknown as Network;
+
+    const normalized = normalizeImportedNetwork(raw);
+    const validCable = normalized.pops[0]?.cables.find((cable) => cable.id === 'pop-cab-1');
+    const invalidCable = normalized.pops[0]?.cables.find((cable) => cable.id === 'pop-cab-2');
+
+    expect(validCable?.dioId).toBe('dio-1');
+    expect(invalidCable?.dioId).toBeUndefined();
+    expect(validCable?.type).toBe('pigtail');
+    expect(invalidCable?.type).toBe('pigtail');
   });
 });

@@ -118,7 +118,7 @@ describe('networkUtils', () => {
       olts: [{ id: 'olt-1', name: 'OLT 1', type: 'compact', slots: [], uplinks: [] }],
       switches: [{ id: 'sw-1', name: 'SW 1', portCount: 24, uplinkPortCount: 4, ports: [], uplinks: [] }],
       routers: [{ id: 'rt-1', name: 'RTR 1', wanCount: 1, lanCount: 4, interfaces: [] }],
-      cables: [{ id: 'cab-1', name: 'CAB 1', type: 'bigtail', fiberCount: 1, fibers: [makeFiber('f-pop', 1)], status: 'active' }],
+      cables: [{ id: 'cab-1', name: 'CAB 1', type: 'pigtail', fiberCount: 1, fibers: [makeFiber('f-pop', 1)], status: 'active' }],
       fusions: [],
     };
 

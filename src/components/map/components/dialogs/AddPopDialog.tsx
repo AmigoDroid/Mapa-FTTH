@@ -77,6 +77,9 @@ export function AddPopDialog({
                 </div>
               </div>
             )}
+            <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              O novo POP sera criado vazio. Adicione DIO, OLT, switch, roteador e VLANs conforme o projeto.
+            </div>
             <div className="flex gap-2">
               <Button onClick={onSubmit} className="flex-1">
                 Adicionar

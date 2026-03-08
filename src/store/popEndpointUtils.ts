@@ -1,18 +1,48 @@
 import type { Fiber, Pop, PopCable, PopFusion } from '@/types/ftth';
 import { generateId, getPopEndpointOwner } from '@/store/networkUtils';
 
-type PopEndpointKind = 'dio' | 'cable' | 'olt' | 'switch' | 'router';
+type PopEndpointRole =
+  | 'dio'
+  | 'cable'
+  | 'olt-pon'
+  | 'olt-uplink'
+  | 'olt-aux'
+  | 'switch-port'
+  | 'router-wan'
+  | 'router-lan'
+  | 'unknown';
+
+type PopEndpointMedium = 'optical' | 'electrical' | 'unknown';
 
 interface ParsedPopCableEndpoint {
   cableId: string;
   fiberNumber: number;
 }
 
-const isEquipmentKind = (kind: PopEndpointKind) =>
-  kind === 'olt' || kind === 'switch' || kind === 'router';
+const resolvePopEndpointRole = (pop: Pop, endpointId: string): PopEndpointRole => {
+  const owner = getPopEndpointOwner(pop, endpointId);
+  if (!owner) return 'unknown';
 
-const getEndpointKind = (pop: Pop, endpointId: string): PopEndpointKind | null =>
-  getPopEndpointOwner(pop, endpointId)?.kind || null;
+  if (owner.kind === 'dio') return 'dio';
+  if (owner.kind === 'cable') return 'cable';
+
+  if (owner.kind === 'olt') {
+    if (endpointId.includes(':u:')) return 'olt-uplink';
+    if (endpointId.includes(':b:') || endpointId.includes(':c:')) return 'olt-aux';
+    if (endpointId.includes(':s:') && endpointId.includes(':p:')) return 'olt-pon';
+    return 'unknown';
+  }
+
+  if (owner.kind === 'switch') return 'switch-port';
+
+  if (owner.kind === 'router') {
+    if (endpointId.includes(':wan:')) return 'router-wan';
+    if (endpointId.includes(':lan:')) return 'router-lan';
+    return 'unknown';
+  }
+
+  return 'unknown';
+};
 
 const getFusionsForEndpoint = (pop: Pop, endpointId: string) =>
   (pop.fusions || []).filter(
@@ -95,32 +125,158 @@ const isInactiveSwitchOrRouterEndpoint = (pop: Pop, endpointId: string): boolean
 export const isInactivePopEndpoint = (pop: Pop, endpointId: string): boolean =>
   isInactiveOltEndpoint(pop, endpointId) || isInactiveSwitchOrRouterEndpoint(pop, endpointId);
 
+const isSwitchOrRouterRole = (role: PopEndpointRole) =>
+  role === 'switch-port' || role === 'router-wan' || role === 'router-lan';
+
+const isDioOpticalServiceRole = (role: PopEndpointRole) =>
+  role === 'olt-pon' || role === 'switch-port' || role === 'router-wan' || role === 'router-lan';
+
+const resolveSwitchConnector = (pop: Pop, endpointId: string): 'RJ45' | 'SFP' | 'SFP+' | null => {
+  if (!endpointId.startsWith('switch:')) return null;
+  const parts = endpointId.split(':');
+  const switchId = parts[1];
+  const kind = parts[2];
+  const index = Number.parseInt(parts[3] || '', 10);
+  if (!switchId || Number.isNaN(index)) return null;
+  const sw = (pop.switches || []).find((item) => item.id === switchId);
+  if (!sw) return null;
+
+  if (kind === 'u') {
+    return (sw.uplinks || []).find((item) => item.index === index)?.connector || 'SFP+';
+  }
+
+  return (sw.ports || []).find((item) => item.index === index)?.connector || 'RJ45';
+};
+
+const resolveRouterConnector = (pop: Pop, endpointId: string): 'RJ45' | 'SFP' | 'SFP+' | null => {
+  if (!endpointId.startsWith('router:')) return null;
+  const parts = endpointId.split(':');
+  const routerId = parts[1];
+  const role = parts[2];
+  const index = Number.parseInt(parts[3] || '', 10);
+  if (!routerId || Number.isNaN(index) || (role !== 'wan' && role !== 'lan')) return null;
+  const router = (pop.routers || []).find((item) => item.id === routerId);
+  if (!router) return null;
+
+  const iface = router.interfaces.find(
+    (item) => item.role.toLowerCase() === role && item.index === index
+  );
+  if (iface?.connector) return iface.connector;
+
+  return role === 'wan' ? 'SFP+' : 'RJ45';
+};
+
+const resolveOltUplinkConnector = (pop: Pop, endpointId: string): 'RJ45' | 'SFP' | 'SFP+' | null => {
+  if (!endpointId.startsWith('olt:') || !endpointId.includes(':u:')) return null;
+  const parts = endpointId.split(':');
+  const oltId = parts[1];
+  const uplinkIndex = Number.parseInt(parts[3] || '', 10);
+  if (!oltId || Number.isNaN(uplinkIndex)) return null;
+  const olt = (pop.olts || []).find((item) => item.id === oltId);
+  if (!olt) return null;
+  return (olt.uplinks || []).find((item) => item.index === uplinkIndex)?.connector || 'SFP+';
+};
+
+const resolveEndpointMedium = (
+  pop: Pop,
+  endpointId: string,
+  endpointRole: PopEndpointRole
+): PopEndpointMedium => {
+  if (endpointRole === 'dio' || endpointRole === 'cable' || endpointRole === 'olt-pon') {
+    return 'optical';
+  }
+
+  if (endpointRole === 'olt-aux') return 'electrical';
+
+  if (endpointRole === 'olt-uplink') {
+    const connector = resolveOltUplinkConnector(pop, endpointId);
+    if (!connector) return 'unknown';
+    return connector === 'RJ45' ? 'electrical' : 'optical';
+  }
+
+  if (endpointRole === 'switch-port') {
+    const connector = resolveSwitchConnector(pop, endpointId);
+    if (!connector) return 'unknown';
+    return connector === 'RJ45' ? 'electrical' : 'optical';
+  }
+
+  if (endpointRole === 'router-wan' || endpointRole === 'router-lan') {
+    const connector = resolveRouterConnector(pop, endpointId);
+    if (!connector) return 'unknown';
+    return connector === 'RJ45' ? 'electrical' : 'optical';
+  }
+
+  return 'unknown';
+};
+
+const isSignalMediumCompatible = (
+  pop: Pop,
+  endpointAId: string,
+  endpointARole: PopEndpointRole,
+  endpointBId: string,
+  endpointBRole: PopEndpointRole
+): boolean => {
+  const mediumA = resolveEndpointMedium(pop, endpointAId, endpointARole);
+  const mediumB = resolveEndpointMedium(pop, endpointBId, endpointBRole);
+  if (mediumA === 'unknown' || mediumB === 'unknown') return false;
+  return mediumA === mediumB;
+};
+
 const canUseEndpoint = (pop: Pop, endpointId: string, otherEndpointId: string): boolean => {
-  const endpointKind = getEndpointKind(pop, endpointId);
-  const otherKind = getEndpointKind(pop, otherEndpointId);
-  if (!endpointKind || !otherKind) return false;
+  const endpointRole = resolvePopEndpointRole(pop, endpointId);
+  const otherRole = resolvePopEndpointRole(pop, otherEndpointId);
+  if (endpointRole === 'unknown' || otherRole === 'unknown') return false;
 
   const linked = getFusionsForEndpoint(pop, endpointId);
-  if (endpointKind !== 'dio') {
+  if (endpointRole !== 'dio') {
     return linked.length === 0;
   }
 
   if (linked.length >= 2) return false;
   if (linked.length === 0) return true;
 
-  const existingOtherKinds = linked
+  let hasCableSide = false;
+  let hasOpticalServiceSide = false;
+
+  linked
     .map((fusion) => {
       const peerId = fusion.endpointAId === endpointId ? fusion.endpointBId : fusion.endpointAId;
-      return getEndpointKind(pop, peerId);
+      return resolvePopEndpointRole(pop, peerId);
     })
-    .filter((kind): kind is PopEndpointKind => Boolean(kind));
+    .forEach((peerRole) => {
+      if (peerRole === 'cable') hasCableSide = true;
+      if (isDioOpticalServiceRole(peerRole)) hasOpticalServiceSide = true;
+    });
 
-  const hasCableSide = existingOtherKinds.some((kind) => kind === 'cable');
-  const hasEquipmentSide = existingOtherKinds.some((kind) => isEquipmentKind(kind));
-
-  if (otherKind === 'cable') return !hasCableSide;
-  if (isEquipmentKind(otherKind)) return !hasEquipmentSide;
+  if (otherRole === 'cable') return !hasCableSide;
+  if (isDioOpticalServiceRole(otherRole)) return !hasOpticalServiceSide;
   return false;
+};
+
+const isAllowedEndpointPair = (roleA: PopEndpointRole, roleB: PopEndpointRole): boolean => {
+  if (roleA === 'unknown' || roleB === 'unknown') return false;
+  if (roleA === roleB && roleA === 'dio') return false;
+
+  if (roleA === 'cable' || roleB === 'cable') {
+    return roleA === 'dio' || roleB === 'dio';
+  }
+
+  if (roleA === 'dio' || roleB === 'dio') {
+    return isDioOpticalServiceRole(roleA === 'dio' ? roleB : roleA);
+  }
+
+  if (roleA === 'olt-pon' || roleB === 'olt-pon') return false;
+
+  if (roleA === 'olt-uplink' || roleB === 'olt-uplink') {
+    return isSwitchOrRouterRole(roleA === 'olt-uplink' ? roleB : roleA);
+  }
+
+  if (roleA === 'olt-aux' || roleB === 'olt-aux') {
+    const peerRole = roleA === 'olt-aux' ? roleB : roleA;
+    return peerRole === 'switch-port' || peerRole === 'router-lan';
+  }
+
+  return isSwitchOrRouterRole(roleA) && isSwitchOrRouterRole(roleB);
 };
 
 export const canConnectPopEndpoints = (
@@ -133,25 +289,15 @@ export const canConnectPopEndpoints = (
   const ownerA = getPopEndpointOwner(pop, endpointAId);
   const ownerB = getPopEndpointOwner(pop, endpointBId);
   if (!ownerA || !ownerB) return false;
-  if (ownerA.kind === 'dio' && ownerB.kind === 'dio') return false;
-
-  if (
-    (ownerA.kind === 'cable' && ownerB.kind !== 'dio') ||
-    (ownerB.kind === 'cable' && ownerA.kind !== 'dio')
-  ) {
-    return false;
-  }
-
-  if (
-    (isEquipmentKind(ownerA.kind) && ownerB.kind !== 'dio') ||
-    (isEquipmentKind(ownerB.kind) && ownerA.kind !== 'dio')
-  ) {
-    return false;
-  }
 
   if (isInactivePopEndpoint(pop, endpointAId) || isInactivePopEndpoint(pop, endpointBId)) {
     return false;
   }
+
+  const roleA = resolvePopEndpointRole(pop, endpointAId);
+  const roleB = resolvePopEndpointRole(pop, endpointBId);
+  if (!isAllowedEndpointPair(roleA, roleB)) return false;
+  if (!isSignalMediumCompatible(pop, endpointAId, roleA, endpointBId, roleB)) return false;
 
   const duplicate = (pop.fusions || []).some(
     (fusion) =>

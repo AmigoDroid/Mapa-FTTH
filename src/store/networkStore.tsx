@@ -56,6 +56,7 @@ import {
   canConnectPopEndpoints,
   clearPopFusionFromCables,
 } from '@/store/popEndpointUtils';
+import { autoTerminateMapCablesAtDio } from '@/store/popProvisioning';
 import { normalizeImportedNetwork } from '@/store/networkImportUtils';
 import { useAuth } from '@/store/authStore';
 import { PERMISSION_LABELS, type AuthPermission } from '@/auth/permissions';
@@ -210,7 +211,7 @@ const buildPopMirrorCable = (cable: Cable, role: PopMirrorRole): PopCable => {
 const removePopMirrorCablesForNetworkCable = (network: Network, cableId: string): Pop[] =>
   (network.pops || []).map((pop) => {
     const linked = (pop.cables || []).filter((item) => item.linkedNetworkCableId === cableId);
-    if (linked.length === 0) return pop;
+    if (linked.length === 0) return autoTerminateMapCablesAtDio(pop);
 
     const linkedIds = new Set(linked.map((item) => item.id));
     const nextFusionLayout = { ...(pop.fusionLayout || {}) };
@@ -218,12 +219,12 @@ const removePopMirrorCablesForNetworkCable = (network: Network, cableId: string)
       delete nextFusionLayout[`cable:${linkedId}`];
     });
 
-    return {
+    return autoTerminateMapCablesAtDio({
       ...pop,
       cables: (pop.cables || []).filter((item) => item.linkedNetworkCableId !== cableId),
       fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, linkedIds)),
       fusionLayout: nextFusionLayout,
-    };
+    });
   });
 
 const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop[] =>
@@ -233,18 +234,18 @@ const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop
     const linked = popCables.filter((item) => item.linkedNetworkCableId === cable.id);
 
     if (!role) {
-      if (linked.length === 0) return pop;
+      if (linked.length === 0) return autoTerminateMapCablesAtDio(pop);
       const linkedIds = new Set(linked.map((item) => item.id));
       const nextFusionLayout = { ...(pop.fusionLayout || {}) };
       linkedIds.forEach((linkedId) => {
         delete nextFusionLayout[`cable:${linkedId}`];
       });
-      return {
+      return autoTerminateMapCablesAtDio({
         ...pop,
         cables: popCables.filter((item) => item.linkedNetworkCableId !== cable.id),
         fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, linkedIds)),
         fusionLayout: nextFusionLayout,
-      };
+      });
     }
 
     const geometry = normalizeCableGeometry(cable.fiberCount, cable.looseTubeCount, cable.fibersPerTube);
@@ -256,10 +257,10 @@ const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop
     });
 
     if (!primary) {
-      return {
+      return autoTerminateMapCablesAtDio({
         ...pop,
         cables: [...popCables, buildPopMirrorCable(cable, role)],
-      };
+      });
     }
 
     const geometryChanged =
@@ -288,7 +289,7 @@ const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop
       mapEndpointRole: role,
     };
 
-    return {
+    return autoTerminateMapCablesAtDio({
       ...pop,
       cables: popCables
         .map((item) => {
@@ -299,7 +300,7 @@ const syncPopMirrorCablesForNetworkCable = (network: Network, cable: Cable): Pop
         .filter((item): item is PopCable => Boolean(item)),
       fusions: (pop.fusions || []).filter((fusion) => !isFusionBoundToPopCableIds(fusion, removedIds)),
       fusionLayout: nextFusionLayout,
-    };
+    });
   });
 
 const isFiberLockedForResize = (fiber: Fiber): boolean =>
@@ -556,6 +557,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       ...popData,
       id: generateId(),
       fusionLayout: {},
+      vlans: [],
       dios: [],
       olts: [],
       switches: [],
@@ -1007,11 +1009,13 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         id: generateId(),
         index: idx + 1,
         active: true,
+        connector: 'RJ45',
       })),
       uplinks: Array.from({ length: uplinkPortCount }, (_, idx) => ({
         id: generateId(),
         index: idx + 1,
         active: true,
+        connector: 'SFP+',
       })),
     };
 
@@ -1033,12 +1037,14 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         index: idx + 1,
         active: true,
         role: 'WAN' as const,
+        connector: 'SFP+' as const,
       })),
       ...Array.from({ length: lanCount }, (_, idx) => ({
         id: generateId(),
         index: idx + 1,
         active: true,
         role: 'LAN' as const,
+        connector: 'RJ45' as const,
       })),
     ];
 
@@ -1065,6 +1071,9 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     delete nextFusionLayout[entityKey];
     updatePop(popId, {
       dios: pop.dios.filter((item) => item.id !== dioId),
+      cables: (pop.cables || []).map((cable) =>
+        cable.dioId === dioId ? { ...cable, dioId: undefined } : cable
+      ),
       fusions: pop.fusions.filter((fusion) => !fusion.endpointAId.startsWith(endpointPrefix) && !fusion.endpointBId.startsWith(endpointPrefix)),
       fusionLayout: nextFusionLayout,
     });
@@ -1149,7 +1158,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     const defaultGbic: OltGbic = {
       id: generateId(),
       model: firstPon?.gbic.model || 'C++',
-      connector: firstPon?.gbic.connector || 'APC-UPC',
+      connector: firstPon?.gbic.connector || 'APC',
       txPowerDbm: firstPon?.gbic.txPowerDbm ?? 3,
     };
 
@@ -1203,7 +1212,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
         gbic: {
           id: generateId(),
           model: '',
-          connector: 'UPC',
+          connector: 'APC',
           txPowerDbm: 0,
         },
       })),
@@ -1241,7 +1250,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
                       gbic: {
                         ...pon.gbic,
                         model: gbicModel.trim(),
-                        connector: 'UPC',
+                        connector: 'APC',
                         txPowerDbm,
                       },
                     }
@@ -1345,7 +1354,15 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       fibers: generateFibers(geometry.fiberCount, 1, geometry.fibersPerTube),
     };
 
-    updatePop(popId, { cables: [...pop.cables, cable] });
+    const draftPop: Pop = {
+      ...pop,
+      cables: [...pop.cables, cable],
+    };
+    const terminatedPop = autoTerminateMapCablesAtDio(draftPop);
+    updatePop(popId, {
+      cables: terminatedPop.cables,
+      fusions: terminatedPop.fusions,
+    });
     return cable;
   }, [state.currentNetwork, updatePop]);
 

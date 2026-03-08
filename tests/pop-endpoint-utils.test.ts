@@ -18,7 +18,7 @@ const makeFiber = (id: string, number: number): Fiber => ({
 const makePopCable = (id: string, name: string): PopCable => ({
   id,
   name,
-  type: 'bigtail',
+  type: 'pigtail',
   fiberCount: 1,
   looseTubeCount: 1,
   fibersPerTube: 12,
@@ -58,8 +58,28 @@ const makePop = (overrides: Partial<Pop> = {}): Pop => ({
       consolePorts: [{ id: 'con-1', index: 1, active: true, role: 'CONSOLE' }],
     },
   ],
-  switches: [],
-  routers: [],
+  switches: [
+    {
+      id: 'sw-1',
+      name: 'SW 1',
+      portCount: 24,
+      uplinkPortCount: 2,
+      ports: [{ id: 'sw-p1', index: 1, active: true, connector: 'RJ45' }],
+      uplinks: [{ id: 'sw-u1', index: 1, active: true, connector: 'SFP+' }],
+    },
+  ],
+  routers: [
+    {
+      id: 'rt-1',
+      name: 'RTR 1',
+      wanCount: 1,
+      lanCount: 1,
+      interfaces: [
+        { id: 'rt-w1', index: 1, active: true, role: 'WAN', connector: 'SFP+' },
+        { id: 'rt-l1', index: 1, active: true, role: 'LAN', connector: 'RJ45' },
+      ],
+    },
+  ],
   cables: [makePopCable('cab-1', 'CAB 1')],
   fusions: [],
   ...overrides,
@@ -70,6 +90,23 @@ describe('popEndpointUtils', () => {
     const pop = makePop();
     expect(canConnectPopEndpoints(pop, 'cable:cab-1:f:1', 'dio:dio-1:p:1')).toBe(true);
     expect(canConnectPopEndpoints(pop, 'cable:cab-1:f:1', 'olt:olt-1:s:1:p:1')).toBe(false);
+  });
+
+  it('canConnectPopEndpoints aplica pares realistas do POP', () => {
+    const pop = makePop();
+    expect(canConnectPopEndpoints(pop, 'dio:dio-1:p:1', 'olt:olt-1:s:1:p:1')).toBe(true);
+    expect(canConnectPopEndpoints(pop, 'dio:dio-1:p:1', 'switch:sw-1:p:1')).toBe(false);
+    expect(canConnectPopEndpoints(pop, 'dio:dio-1:p:2', 'switch:sw-1:u:1')).toBe(true);
+    expect(canConnectPopEndpoints(pop, 'dio:dio-1:p:3', 'router:rt-1:wan:1')).toBe(true);
+    expect(canConnectPopEndpoints(pop, 'dio:dio-1:p:4', 'router:rt-1:lan:1')).toBe(false);
+
+    expect(canConnectPopEndpoints(pop, 'olt:olt-1:u:1', 'switch:sw-1:u:1')).toBe(true);
+    expect(canConnectPopEndpoints(pop, 'olt:olt-1:u:1', 'dio:dio-1:p:2')).toBe(false);
+
+    expect(canConnectPopEndpoints(pop, 'switch:sw-1:p:1', 'router:rt-1:wan:1')).toBe(false);
+    expect(canConnectPopEndpoints(pop, 'switch:sw-1:u:1', 'router:rt-1:wan:1')).toBe(true);
+    expect(canConnectPopEndpoints(pop, 'olt:olt-1:b:1', 'router:rt-1:wan:1')).toBe(false);
+    expect(canConnectPopEndpoints(pop, 'olt:olt-1:b:1', 'router:rt-1:lan:1')).toBe(true);
   });
 
   it('canConnectPopEndpoints bloqueia endpoints duplicados e porta inativa', () => {

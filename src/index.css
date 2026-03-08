@@ -77,7 +77,7 @@
 /* Estilos para o mapa Leaflet */
 .leaflet-container {
   font-family: inherit;
-  transform-style: preserve-3d;
+  transform-style: flat;
 }
 
 .leaflet-popup-pane,
@@ -108,11 +108,33 @@
   transition: transform 0.18s ease, filter 0.18s ease;
   transform-origin: center;
   filter: saturate(1.06);
+  position: relative;
 }
 
 .map-marker-3d:hover {
   transform: perspective(180px) rotateX(8deg) translateY(-3px) scale(1.06);
   filter: saturate(1.14) brightness(1.03);
+}
+
+.map-marker-pop.is-active::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 10px;
+  border: 1px solid rgba(249, 115, 22, 0.55);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.24);
+  animation: pop-marker-breath 1.6s ease-in-out infinite;
+}
+
+@keyframes pop-marker-breath {
+  0%, 100% {
+    transform: scale(0.94);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.7;
+  }
 }
 
 .map-3d-cable-glow {
@@ -121,6 +143,20 @@
 
 .map-3d-cable-core {
   filter: drop-shadow(0 3px 4px rgba(2, 6, 23, 0.42));
+}
+
+.map-3d-cable-active {
+  stroke-dasharray: 20 12;
+  animation: map-cable-flow 2.2s linear infinite;
+}
+
+@keyframes map-cable-flow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -64;
+  }
 }
 
 .map-3d-draft-line {

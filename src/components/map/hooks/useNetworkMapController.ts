@@ -41,16 +41,39 @@ declare global {
   }
 }
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const MAP_DEFAULT_VIEW = { lat: -15.7975, lng: -47.8919, zoom: 13 };
+
+const mapSessionState: {
+  initialLocateDone: boolean;
+  lastView: { lat: number; lng: number; zoom: number } | null;
+} = {
+  initialLocateDone: false,
+  lastView: null,
+};
+
 export function useNetworkMapController() {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<any>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const invalidateSizeTimerRef = useRef<number | null>(null);
   const markersLayer = useRef<any>(null);
   const cablesLayer = useRef<any>(null);
   const fiberTraceLayer = useRef<any>(null);
   const tileLayer = useRef<any>(null);
   const tempPolylineRef = useRef<any>(null);
   const clickModeRef = useRef<ClickMode>('normal');
-  const initialLocateRequestedRef = useRef(false);
+  const initialLocateRequestedRef = useRef(mapSessionState.initialLocateDone);
+  const hasUserInteractedWithMapRef = useRef(false);
+  const lastMapDragEndedAtRef = useRef(0);
+  const lastMapZoomEndedAtRef = useRef(0);
   const satelliteTileErrorCountRef = useRef(0);
   const satelliteAutoZoomCooldownRef = useRef(false);
   const satelliteZoomFallbackNotifiedRef = useRef(false);
@@ -571,8 +594,15 @@ export function useNetworkMapController() {
       return;
     }
 
+    const bootstrapView = mapSessionState.lastView || MAP_DEFAULT_VIEW;
+
     // Criar mapa centrado no Brasil
-    const map = L.map(mapRef.current, { zoomControl: false }).setView([-15.7975, -47.8919], 13);
+    const map = L.map(mapRef.current, {
+      zoomControl: false,
+      inertia: false,
+      inertiaDeceleration: 3000,
+      inertiaMaxSpeed: 1200,
+    }).setView([bootstrapView.lat, bootstrapView.lng], bootstrapView.zoom, { animate: false });
     
     // Adicionar camada de tiles
     tileLayer.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -587,9 +617,59 @@ export function useNetworkMapController() {
 
     leafletMap.current = map;
     setIsMapReady(true);
+    if (mapSessionState.lastView) {
+      hasUserInteractedWithMapRef.current = true;
+    }
+
+    const markMapInteraction = () => {
+      hasUserInteractedWithMapRef.current = true;
+    };
+    const persistMapView = () => {
+      const center = map.getCenter?.();
+      const zoom = Number(map.getZoom?.());
+      if (!center || !Number.isFinite(zoom)) return;
+      mapSessionState.lastView = { lat: center.lat, lng: center.lng, zoom };
+    };
+    const scheduleInvalidateSize = () => {
+      if (!leafletMap.current) return;
+      if (invalidateSizeTimerRef.current) {
+        window.clearTimeout(invalidateSizeTimerRef.current);
+      }
+      invalidateSizeTimerRef.current = window.setTimeout(() => {
+        if (!leafletMap.current) return;
+        leafletMap.current.invalidateSize({ pan: false, animate: false });
+        invalidateSizeTimerRef.current = null;
+      }, 90);
+    };
+
+    map.on('dragstart', markMapInteraction);
+    map.on('zoomstart', markMapInteraction);
+    map.on('dragend', () => {
+      lastMapDragEndedAtRef.current = Date.now();
+    });
+    map.on('zoomend', () => {
+      lastMapZoomEndedAtRef.current = Date.now();
+      persistMapView();
+    });
+    map.on('moveend', persistMapView);
+    window.addEventListener('resize', scheduleInvalidateSize);
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        scheduleInvalidateSize();
+      });
+      observer.observe(mapRef.current);
+      resizeObserverRef.current = observer;
+    }
+    scheduleInvalidateSize();
 
     // Evento de clique no mapa
     map.on('click', (e: any) => {
+      const now = Date.now();
+      if (now - lastMapDragEndedAtRef.current < 220) return;
+      if (now - lastMapZoomEndedAtRef.current < 180) return;
+
+      map.stop?.();
+      hasUserInteractedWithMapRef.current = true;
       const { lat, lng } = e.latlng;
       const pendingRequestId = pendingMapPointRequestIdRef.current;
 
@@ -633,6 +713,15 @@ export function useNetworkMapController() {
     });
 
     return () => {
+      window.removeEventListener('resize', scheduleInvalidateSize);
+      if (resizeObserverRef.current) {
+        resizeObserverRef.current.disconnect();
+        resizeObserverRef.current = null;
+      }
+      if (invalidateSizeTimerRef.current) {
+        window.clearTimeout(invalidateSizeTimerRef.current);
+        invalidateSizeTimerRef.current = null;
+      }
       map.remove();
       leafletMap.current = null;
       tileLayer.current = null;
@@ -674,6 +763,9 @@ export function useNetworkMapController() {
         satelliteTileErrorCountRef.current = Math.max(0, satelliteTileErrorCountRef.current - 1);
       };
       handleSatelliteTileError = () => {
+        const isDrawingMode = clickModeRef.current === 'addCable' || clickModeRef.current === 'editCable';
+        if (isDrawingMode) return;
+
         const currentZoom = Number(map.getZoom?.()) || 0;
         if (currentZoom <= 5) return;
         if (satelliteAutoZoomCooldownRef.current) return;
@@ -683,11 +775,10 @@ export function useNetworkMapController() {
 
         satelliteAutoZoomCooldownRef.current = true;
         satelliteTileErrorCountRef.current = 0;
-        map.setZoom(Math.max(5, currentZoom - 1), { animate: true });
 
         if (!satelliteZoomFallbackNotifiedRef.current) {
           satelliteZoomFallbackNotifiedRef.current = true;
-          toast.message('Limite de imagem no satélite para esta regiao. Ajustando zoom automaticamente.');
+          toast.message('Limite de imagem no satélite para esta regiao. Reduza o zoom manualmente.');
         }
 
         window.setTimeout(() => {
@@ -714,6 +805,27 @@ export function useNetworkMapController() {
       if (handleSatelliteTileError) layer.off('tileerror', handleSatelliteTileError);
     };
   }, [mapView]);
+
+  useEffect(() => {
+    if (!leafletMap.current) return;
+    const map = leafletMap.current;
+    const isDrawingMode = clickMode === 'addCable' || clickMode === 'editCable';
+
+    if (isDrawingMode) {
+      map.doubleClickZoom?.disable?.();
+      map.scrollWheelZoom?.disable?.();
+      map.touchZoom?.disable?.();
+      map.boxZoom?.disable?.();
+      map.keyboard?.disable?.();
+      return;
+    }
+
+    map.doubleClickZoom?.enable?.();
+    map.scrollWheelZoom?.enable?.();
+    map.touchZoom?.enable?.();
+    map.boxZoom?.enable?.();
+    map.keyboard?.enable?.();
+  }, [clickMode]);
 
   useEffect(() => {
     if (!leafletMap.current) return;
@@ -906,13 +1018,18 @@ export function useNetworkMapController() {
     markersLayer.current.clearLayers();
 
     (currentNetwork?.pops || []).forEach((pop: Pop) => {
+      const safePopName = escapeHtml(pop.name || 'POP');
       const popIcon = L.divIcon({
         className: 'custom-pop-marker',
         html: `
-          <div class="map-marker-3d map-marker-pop" style="
+          <div class="map-marker-3d map-marker-pop ${pop.status === 'active' ? 'is-active' : ''}" style="
             width: 26px;
             height: 26px;
-            background: linear-gradient(145deg, #efe7ff 0%, #7c3aed 55%, #5b21b6 100%);
+            background: ${
+              pop.status === 'active'
+                ? 'linear-gradient(145deg, #fff5d6 0%, #f97316 58%, #c2410c 100%)'
+                : 'linear-gradient(145deg, #e5e7eb 0%, #9ca3af 58%, #6b7280 100%)'
+            };
             border: 2px solid white;
             border-radius: 6px;
             display: flex;
@@ -934,14 +1051,17 @@ export function useNetworkMapController() {
         draggable: isEditing,
       });
       const city = (currentNetwork?.cities || []).find((item: City) => item.id === pop.cityId);
+      const safeCityLabel = city ? escapeHtml(`${city.sigla} - ${city.name}`) : 'N/A';
       marker.bindPopup(`
         <div style="min-width: 200px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${pop.name}</h3>
-          <p style="margin: 4px 0;"><strong>Cidade:</strong> ${city ? `${city.sigla} - ${city.name}` : 'N/A'}</p>
+          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safePopName}</h3>
+          <p style="margin: 4px 0;"><strong>Cidade:</strong> ${safeCityLabel}</p>
+          <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(pop.status)}</p>
           <p style="margin: 4px 0;"><strong>DIO:</strong> ${(pop.dios || []).length}</p>
           <p style="margin: 4px 0;"><strong>OLT:</strong> ${(pop.olts || []).length}</p>
+          <p style="margin: 4px 0;"><strong>VLANs:</strong> ${(pop.vlans || []).length}</p>
         </div>
-      `, { className: 'map-3d-popup' });
+      `, { className: 'map-3d-popup', autoPan: false });
       marker.on('click', () => {
         selectPop(pop);
       });
@@ -960,6 +1080,8 @@ export function useNetworkMapController() {
     });
 
     currentNetwork?.boxes.forEach((box: Box) => {
+      const safeBoxName = escapeHtml(box.name || 'Caixa');
+      const safeBoxAddress = box.address ? escapeHtml(box.address) : '';
       const marker = L.marker([box.position.lat, box.position.lng], {
         icon: createBoxIcon(box.type, box.status),
         draggable: isEditing,
@@ -967,16 +1089,16 @@ export function useNetworkMapController() {
 
       const popupContent = `
         <div style="min-width: 200px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${box.name}</h3>
-          <p style="margin: 4px 0;"><strong>Tipo:</strong> ${box.type}</p>
+          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeBoxName}</h3>
+          <p style="margin: 4px 0;"><strong>Tipo:</strong> ${escapeHtml(box.type)}</p>
           <p style="margin: 4px 0;"><strong>Capacidade:</strong> ${box.capacity} fibras</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${box.status}</p>
+          <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(box.status)}</p>
           <p style="margin: 4px 0;"><strong>Fibras usadas:</strong> ${box.fibers.filter((f) => f.status === 'active').length}</p>
-          ${box.address ? `<p style="margin: 4px 0;"><strong>Endereco:</strong> ${box.address}</p>` : ''}
+          ${safeBoxAddress ? `<p style="margin: 4px 0;"><strong>Endereco:</strong> ${safeBoxAddress}</p>` : ''}
         </div>
       `;
 
-      marker.bindPopup(popupContent, { className: 'map-3d-popup' });
+      marker.bindPopup(popupContent, { className: 'map-3d-popup', autoPan: false });
       
       marker.on('click', () => {
         selectBox(box);
@@ -1033,6 +1155,7 @@ export function useNetworkMapController() {
     });
 
     (currentNetwork?.reserves || []).forEach((reserve: ReservePoint) => {
+      const safeReserveName = escapeHtml(reserve.name || 'Reserva');
       const reserveIcon = L.divIcon({
         className: 'custom-reserve-marker',
         html: `
@@ -1059,11 +1182,11 @@ export function useNetworkMapController() {
       const marker = L.marker([reserve.position.lat, reserve.position.lng], { icon: reserveIcon });
       marker.bindPopup(`
         <div style="min-width: 160px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${reserve.name}</h3>
+          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeReserveName}</h3>
           <p style="margin: 4px 0;"><strong>Tipo:</strong> Reserva</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${reserve.status}</p>
+          <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(reserve.status)}</p>
         </div>
-      `, { className: 'map-3d-popup' });
+      `, { className: 'map-3d-popup', autoPan: false });
       marker.addTo(markersLayer.current);
     });
   }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing]);
@@ -1078,6 +1201,12 @@ export function useNetworkMapController() {
     currentNetwork?.cables.forEach((cable: Cable) => {
       const startEndpoint = cable.startPoint ? resolveNetworkEndpointById(cable.startPoint) : null;
       const endEndpoint = cable.endPoint ? resolveNetworkEndpointById(cable.endPoint) : null;
+      const safeCableName = escapeHtml(cable.name || 'Cabo');
+      const safeCableType = escapeHtml(cable.type);
+      const safeCableModel = escapeHtml(cable.model || 'N/A');
+      const safeStartName = escapeHtml(startEndpoint?.name || 'Nao definida');
+      const safeEndName = escapeHtml(endEndpoint?.name || 'Nao definido');
+      const safeCableStatus = escapeHtml(cable.status);
 
       const path = cable.path.length > 0
         ? cable.path.map((p) => [p.lat, p.lng])
@@ -1104,26 +1233,26 @@ export function useNetworkMapController() {
         dashArray: cable.status === 'projected' ? '10, 10' : undefined,
         lineCap: 'round',
         lineJoin: 'round',
-        className: 'map-3d-cable-core',
+        className: `map-3d-cable-core ${cable.status === 'active' ? 'map-3d-cable-active' : ''}`,
       });
 
       polyline.bindPopup(`
         <div style="min-width: 180px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${cable.name}</h3>
-          <p style="margin: 4px 0;"><strong>Tipo:</strong> ${cable.type}</p>
-          <p style="margin: 4px 0;"><strong>Modelo:</strong> ${cable.model || 'N/A'}</p>
+          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeCableName}</h3>
+          <p style="margin: 4px 0;"><strong>Tipo:</strong> ${safeCableType}</p>
+          <p style="margin: 4px 0;"><strong>Modelo:</strong> ${safeCableModel}</p>
           <p style="margin: 4px 0;"><strong>Fibras:</strong> ${cable.fiberCount}</p>
           <p style="margin: 4px 0;"><strong>Tubos loose:</strong> ${cable.looseTubeCount || 1}</p>
           <p style="margin: 4px 0;"><strong>Fibras por tubo:</strong> ${cable.fibersPerTube || 12}</p>
           <p style="margin: 4px 0;"><strong>Comprimento:</strong> ${cable.length}m</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${cable.status}</p>
-          <p style="margin: 4px 0;"><strong>Origem:</strong> ${startEndpoint?.name || 'Nao definida'}</p>
-          <p style="margin: 4px 0;"><strong>Destino:</strong> ${endEndpoint?.name || 'Nao definido'}</p>
+          <p style="margin: 4px 0;"><strong>Status:</strong> ${safeCableStatus}</p>
+          <p style="margin: 4px 0;"><strong>Origem:</strong> ${safeStartName}</p>
+          <p style="margin: 4px 0;"><strong>Destino:</strong> ${safeEndName}</p>
           <button data-edit-cable-id="${cable.id}" style="margin-top: 8px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
             Editar tracado
           </button>
         </div>
-      `, { className: 'map-3d-popup' });
+      `, { className: 'map-3d-popup', autoPan: false });
 
       polyline.on('popupopen', (event: any) => {
         const popupElement = event.popup?.getElement?.() as HTMLElement | undefined;
@@ -1376,9 +1505,14 @@ export function useNetworkMapController() {
     setShowAddCable(true);
   };
 
-  const handleLocateUser = useCallback(() => {
+  const runLocateUser = useCallback((isAutomatic: boolean) => {
     if (!leafletMap.current) return;
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+
+    if (isAutomatic) {
+      if (hasUserInteractedWithMapRef.current) return;
+      if (clickModeRef.current !== 'normal') return;
+    }
 
     setIsLocatingUser(true);
     navigator.geolocation.getCurrentPosition(
@@ -1386,6 +1520,12 @@ export function useNetworkMapController() {
         if (!leafletMap.current) {
           setIsLocatingUser(false);
           return;
+        }
+        if (isAutomatic) {
+          if (hasUserInteractedWithMapRef.current || clickModeRef.current !== 'normal') {
+            setIsLocatingUser(false);
+            return;
+          }
         }
         const map = leafletMap.current;
         const currentZoom = Number(map.getZoom?.()) || 13;
@@ -1397,6 +1537,11 @@ export function useNetworkMapController() {
           animate: true,
           duration: 0.9,
         });
+        mapSessionState.lastView = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          zoom: targetZoom,
+        };
         setIsLocatingUser(false);
       },
       () => {
@@ -1410,11 +1555,17 @@ export function useNetworkMapController() {
     );
   }, [mapView]);
 
+  const handleLocateUser = useCallback(() => {
+    runLocateUser(false);
+  }, [runLocateUser]);
+
   useEffect(() => {
     if (!isMapReady || initialLocateRequestedRef.current) return;
     initialLocateRequestedRef.current = true;
-    handleLocateUser();
-  }, [isMapReady, handleLocateUser]);
+    mapSessionState.initialLocateDone = true;
+    if (mapSessionState.lastView) return;
+    runLocateUser(true);
+  }, [isMapReady, runLocateUser]);
 
   const handleCancelAddPop = () => {
     setShowAddPop(false);
