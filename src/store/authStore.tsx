@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { authApi } from '@/api/authApi';
-import { setApiAccessToken } from '@/api/client';
+import { ApiError, setApiAccessToken } from '@/api/client';
 import type { ApiLicense, ApiProviderSessionInfo } from '@/api/types';
 import type { AuthPermission, AuthRole } from '@/auth/permissions';
 
@@ -122,8 +122,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setApiAccessToken(token);
       const payload = await authApi.me();
       applySession(token, payload.provider, payload.user, payload.permissions, payload.license);
-    } catch {
-      clearSession();
+    } catch (error) {
+      // Keep persisted token on transient errors (network/5xx). Clear only invalid/forbidden sessions.
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        clearSession();
+      }
     } finally {
       setIsHydrating(false);
     }
