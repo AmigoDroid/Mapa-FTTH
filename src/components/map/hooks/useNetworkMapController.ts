@@ -133,6 +133,7 @@ export function useNetworkMapController() {
   const [editingCableId, setEditingCableId] = useState<string>('');
   const [pendingAttach, setPendingAttach] = useState<PendingAttachToCable | null>(null);
   const [manualCableControl, setManualCableControl] = useState(false);
+  const isDrawingMode = clickMode === 'addCable' || clickMode === 'editCable';
 
   const maxFiberCapacity = Math.max(1, looseTubeCount * fibersPerTube);
   const availableModels = getCableModelsByType(cableType);
@@ -551,6 +552,7 @@ export function useNetworkMapController() {
         lineCap: 'round',
         lineJoin: 'round',
         className: 'map-fiber-trace-glow',
+        interactive: false,
       }).addTo(fiberTraceLayer.current);
 
       const core = L.polyline(tracePath, {
@@ -560,6 +562,7 @@ export function useNetworkMapController() {
         lineCap: 'round',
         lineJoin: 'round',
         className: 'map-fiber-trace-line',
+        interactive: false,
       }).addTo(fiberTraceLayer.current);
 
       const coreElement = core.getElement?.() as SVGElement | undefined;
@@ -809,7 +812,6 @@ export function useNetworkMapController() {
   useEffect(() => {
     if (!leafletMap.current) return;
     const map = leafletMap.current;
-    const isDrawingMode = clickMode === 'addCable' || clickMode === 'editCable';
 
     if (isDrawingMode) {
       map.doubleClickZoom?.disable?.();
@@ -825,7 +827,32 @@ export function useNetworkMapController() {
     map.touchZoom?.enable?.();
     map.boxZoom?.enable?.();
     map.keyboard?.enable?.();
-  }, [clickMode]);
+  }, [isDrawingMode]);
+
+  useEffect(() => {
+    if (!leafletMap.current) return;
+    const map = leafletMap.current;
+    const panes = map.getPanes?.();
+    if (!panes) return;
+
+    const panesToToggle = [
+      panes.overlayPane,
+      panes.markerPane,
+      panes.popupPane,
+      panes.tooltipPane,
+      panes.shadowPane,
+    ].filter(Boolean) as Array<HTMLElement>;
+
+    panesToToggle.forEach((pane) => {
+      pane.style.pointerEvents = isDrawingMode ? 'none' : '';
+    });
+
+    return () => {
+      panesToToggle.forEach((pane) => {
+        pane.style.pointerEvents = '';
+      });
+    };
+  }, [isDrawingMode]);
 
   useEffect(() => {
     if (!leafletMap.current) return;
@@ -873,6 +900,7 @@ export function useNetworkMapController() {
         opacity: 0.85,
         dashArray: '6, 8',
         className: 'map-3d-draft-line',
+        interactive: false,
       }).addTo(leafletMap.current);
     }
   }, [clickMode, cableWaypoints, cableStartBox, cableEndBox, editingCableId, currentNetwork?.cables, resolveNetworkEndpointById]);
@@ -1015,6 +1043,7 @@ export function useNetworkMapController() {
     if (!isMapReady || !markersLayer.current) return;
     
     const L = window.L;
+    const markerInteractivityEnabled = !isDrawingMode;
     markersLayer.current.clearLayers();
 
     (currentNetwork?.pops || []).forEach((pop: Pop) => {
@@ -1048,33 +1077,36 @@ export function useNetworkMapController() {
 
       const marker = L.marker([pop.position.lat, pop.position.lng], {
         icon: popIcon,
-        draggable: isEditing,
+        draggable: isEditing && markerInteractivityEnabled,
+        interactive: markerInteractivityEnabled,
       });
       const city = (currentNetwork?.cities || []).find((item: City) => item.id === pop.cityId);
       const safeCityLabel = city ? escapeHtml(`${city.sigla} - ${city.name}`) : 'N/A';
-      marker.bindPopup(`
-        <div style="min-width: 200px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safePopName}</h3>
-          <p style="margin: 4px 0;"><strong>Cidade:</strong> ${safeCityLabel}</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(pop.status)}</p>
-          <p style="margin: 4px 0;"><strong>DIO:</strong> ${(pop.dios || []).length}</p>
-          <p style="margin: 4px 0;"><strong>OLT:</strong> ${(pop.olts || []).length}</p>
-          <p style="margin: 4px 0;"><strong>VLANs:</strong> ${(pop.vlans || []).length}</p>
-        </div>
-      `, { className: 'map-3d-popup', autoPan: false });
-      marker.on('click', () => {
-        selectPop(pop);
-      });
-      if (isEditing) {
-        marker.on('dragend', (event: any) => {
-          const latLng = event.target.getLatLng();
-          updatePop(pop.id, {
-            position: {
-              lat: latLng.lat,
-              lng: latLng.lng,
-            },
-          });
+      if (markerInteractivityEnabled) {
+        marker.bindPopup(`
+          <div style="min-width: 200px;">
+            <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safePopName}</h3>
+            <p style="margin: 4px 0;"><strong>Cidade:</strong> ${safeCityLabel}</p>
+            <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(pop.status)}</p>
+            <p style="margin: 4px 0;"><strong>DIO:</strong> ${(pop.dios || []).length}</p>
+            <p style="margin: 4px 0;"><strong>OLT:</strong> ${(pop.olts || []).length}</p>
+            <p style="margin: 4px 0;"><strong>VLANs:</strong> ${(pop.vlans || []).length}</p>
+          </div>
+        `, { className: 'map-3d-popup', autoPan: false });
+        marker.on('click', () => {
+          selectPop(pop);
         });
+        if (isEditing) {
+          marker.on('dragend', (event: any) => {
+            const latLng = event.target.getLatLng();
+            updatePop(pop.id, {
+              position: {
+                lat: latLng.lat,
+                lng: latLng.lng,
+              },
+            });
+          });
+        }
       }
       marker.addTo(markersLayer.current);
     });
@@ -1084,7 +1116,8 @@ export function useNetworkMapController() {
       const safeBoxAddress = box.address ? escapeHtml(box.address) : '';
       const marker = L.marker([box.position.lat, box.position.lng], {
         icon: createBoxIcon(box.type, box.status),
-        draggable: isEditing,
+        draggable: isEditing && markerInteractivityEnabled,
+        interactive: markerInteractivityEnabled,
       });
 
       const popupContent = `
@@ -1098,58 +1131,60 @@ export function useNetworkMapController() {
         </div>
       `;
 
-      marker.bindPopup(popupContent, { className: 'map-3d-popup', autoPan: false });
-      
-      marker.on('click', () => {
-        selectBox(box);
-      });
+      if (markerInteractivityEnabled) {
+        marker.bindPopup(popupContent, { className: 'map-3d-popup', autoPan: false });
+        
+        marker.on('click', () => {
+          selectBox(box);
+        });
 
-      if (isEditing) {
-        marker.on('dragend', (event: any) => {
-          const latLng = event.target.getLatLng();
-          updateBox(box.id, {
-            position: {
-              lat: latLng.lat,
-              lng: latLng.lng,
-            },
+        if (isEditing) {
+          marker.on('dragend', (event: any) => {
+            const latLng = event.target.getLatLng();
+            updateBox(box.id, {
+              position: {
+                lat: latLng.lat,
+                lng: latLng.lng,
+              },
+            });
           });
+        }
+
+        marker.on('contextmenu', (e: any) => {
+          const container = document.createElement('div');
+          container.style.display = 'flex';
+          container.style.gap = '8px';
+
+          const editButton = document.createElement('button');
+          editButton.textContent = 'Editar';
+          editButton.style.padding = '4px 8px';
+          editButton.onclick = () => {
+            selectBox(box);
+            setEditing(true);
+            leafletMap.current?.closePopup();
+          };
+
+          const deleteButton = document.createElement('button');
+          deleteButton.textContent = 'Excluir';
+          deleteButton.style.padding = '4px 8px';
+          deleteButton.style.background = '#ff4444';
+          deleteButton.style.color = 'white';
+          deleteButton.onclick = () => {
+            if (window.confirm('Tem certeza que deseja excluir esta caixa?')) {
+              removeBox(box.id);
+            }
+            leafletMap.current?.closePopup();
+          };
+
+          container.appendChild(editButton);
+          container.appendChild(deleteButton);
+
+          L.popup()
+            .setLatLng(e.latlng)
+            .setContent(container)
+            .openOn(leafletMap.current);
         });
       }
-
-      marker.on('contextmenu', (e: any) => {
-        const container = document.createElement('div');
-        container.style.display = 'flex';
-        container.style.gap = '8px';
-
-        const editButton = document.createElement('button');
-        editButton.textContent = 'Editar';
-        editButton.style.padding = '4px 8px';
-        editButton.onclick = () => {
-          selectBox(box);
-          setEditing(true);
-          leafletMap.current?.closePopup();
-        };
-
-        const deleteButton = document.createElement('button');
-        deleteButton.textContent = 'Excluir';
-        deleteButton.style.padding = '4px 8px';
-        deleteButton.style.background = '#ff4444';
-        deleteButton.style.color = 'white';
-        deleteButton.onclick = () => {
-          if (window.confirm('Tem certeza que deseja excluir esta caixa?')) {
-            removeBox(box.id);
-          }
-          leafletMap.current?.closePopup();
-        };
-
-        container.appendChild(editButton);
-        container.appendChild(deleteButton);
-
-        L.popup()
-          .setLatLng(e.latlng)
-          .setContent(container)
-          .openOn(leafletMap.current);
-      });
 
       marker.addTo(markersLayer.current);
     });
@@ -1179,23 +1214,29 @@ export function useNetworkMapController() {
         iconAnchor: [11, 11],
       });
 
-      const marker = L.marker([reserve.position.lat, reserve.position.lng], { icon: reserveIcon });
-      marker.bindPopup(`
-        <div style="min-width: 160px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeReserveName}</h3>
-          <p style="margin: 4px 0;"><strong>Tipo:</strong> Reserva</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(reserve.status)}</p>
-        </div>
-      `, { className: 'map-3d-popup', autoPan: false });
+      const marker = L.marker([reserve.position.lat, reserve.position.lng], {
+        icon: reserveIcon,
+        interactive: markerInteractivityEnabled,
+      });
+      if (markerInteractivityEnabled) {
+        marker.bindPopup(`
+          <div style="min-width: 160px;">
+            <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeReserveName}</h3>
+            <p style="margin: 4px 0;"><strong>Tipo:</strong> Reserva</p>
+            <p style="margin: 4px 0;"><strong>Status:</strong> ${escapeHtml(reserve.status)}</p>
+          </div>
+        `, { className: 'map-3d-popup', autoPan: false });
+      }
       marker.addTo(markersLayer.current);
     });
-  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing]);
+  }, [currentNetwork?.boxes, currentNetwork?.reserves, currentNetwork?.pops, currentNetwork?.cities, isMapReady, createBoxIcon, selectBox, selectPop, setEditing, removeBox, updatePop, updateBox, isEditing, isDrawingMode]);
 
   // Atualizar cabos no mapa
   useEffect(() => {
     if (!isMapReady || !cablesLayer.current) return;
     
     const L = window.L;
+    const cableInteractivityEnabled = !isDrawingMode;
     cablesLayer.current.clearLayers();
 
     currentNetwork?.cables.forEach((cable: Cable) => {
@@ -1224,6 +1265,7 @@ export function useNetworkMapController() {
         lineCap: 'round',
         lineJoin: 'round',
         className: 'map-3d-cable-glow',
+        interactive: cableInteractivityEnabled,
       });
 
       const polyline = L.polyline(path, {
@@ -1234,50 +1276,53 @@ export function useNetworkMapController() {
         lineCap: 'round',
         lineJoin: 'round',
         className: `map-3d-cable-core ${cable.status === 'active' ? 'map-3d-cable-active' : ''}`,
+        interactive: cableInteractivityEnabled,
       });
 
-      polyline.bindPopup(`
-        <div style="min-width: 180px;">
-          <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeCableName}</h3>
-          <p style="margin: 4px 0;"><strong>Tipo:</strong> ${safeCableType}</p>
-          <p style="margin: 4px 0;"><strong>Modelo:</strong> ${safeCableModel}</p>
-          <p style="margin: 4px 0;"><strong>Fibras:</strong> ${cable.fiberCount}</p>
-          <p style="margin: 4px 0;"><strong>Tubos loose:</strong> ${cable.looseTubeCount || 1}</p>
-          <p style="margin: 4px 0;"><strong>Fibras por tubo:</strong> ${cable.fibersPerTube || 12}</p>
-          <p style="margin: 4px 0;"><strong>Comprimento:</strong> ${cable.length}m</p>
-          <p style="margin: 4px 0;"><strong>Status:</strong> ${safeCableStatus}</p>
-          <p style="margin: 4px 0;"><strong>Origem:</strong> ${safeStartName}</p>
-          <p style="margin: 4px 0;"><strong>Destino:</strong> ${safeEndName}</p>
-          <button data-edit-cable-id="${cable.id}" style="margin-top: 8px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
-            Editar tracado
-          </button>
-        </div>
-      `, { className: 'map-3d-popup', autoPan: false });
+      if (cableInteractivityEnabled) {
+        polyline.bindPopup(`
+          <div style="min-width: 180px;">
+            <h3 style="margin: 0 0 8px 0; font-weight: bold;">${safeCableName}</h3>
+            <p style="margin: 4px 0;"><strong>Tipo:</strong> ${safeCableType}</p>
+            <p style="margin: 4px 0;"><strong>Modelo:</strong> ${safeCableModel}</p>
+            <p style="margin: 4px 0;"><strong>Fibras:</strong> ${cable.fiberCount}</p>
+            <p style="margin: 4px 0;"><strong>Tubos loose:</strong> ${cable.looseTubeCount || 1}</p>
+            <p style="margin: 4px 0;"><strong>Fibras por tubo:</strong> ${cable.fibersPerTube || 12}</p>
+            <p style="margin: 4px 0;"><strong>Comprimento:</strong> ${cable.length}m</p>
+            <p style="margin: 4px 0;"><strong>Status:</strong> ${safeCableStatus}</p>
+            <p style="margin: 4px 0;"><strong>Origem:</strong> ${safeStartName}</p>
+            <p style="margin: 4px 0;"><strong>Destino:</strong> ${safeEndName}</p>
+            <button data-edit-cable-id="${cable.id}" style="margin-top: 8px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
+              Editar tracado
+            </button>
+          </div>
+        `, { className: 'map-3d-popup', autoPan: false });
 
-      polyline.on('popupopen', (event: any) => {
-        const popupElement = event.popup?.getElement?.() as HTMLElement | undefined;
-        const button = popupElement?.querySelector<HTMLButtonElement>(`button[data-edit-cable-id="${cable.id}"]`);
-        if (!button) return;
-        button.onclick = () => {
-          handleStartEditCablePath(cable.id);
-          leafletMap.current?.closePopup();
+        polyline.on('popupopen', (event: any) => {
+          const popupElement = event.popup?.getElement?.() as HTMLElement | undefined;
+          const button = popupElement?.querySelector<HTMLButtonElement>(`button[data-edit-cable-id="${cable.id}"]`);
+          if (!button) return;
+          button.onclick = () => {
+            handleStartEditCablePath(cable.id);
+            leafletMap.current?.closePopup();
+          };
+        });
+
+        const handleSelectCableForAnalyzer = () => {
+          window.dispatchEvent(
+            new CustomEvent<FiberAnalyzerSelectCableDetail>('ftth:fiber-analyzer-select-cable', {
+              detail: { cableId: cable.id },
+            })
+          );
         };
-      });
-
-      const handleSelectCableForAnalyzer = () => {
-        window.dispatchEvent(
-          new CustomEvent<FiberAnalyzerSelectCableDetail>('ftth:fiber-analyzer-select-cable', {
-            detail: { cableId: cable.id },
-          })
-        );
-      };
-      polyline.on('click', handleSelectCableForAnalyzer);
-      cableGlow.on('click', handleSelectCableForAnalyzer);
+        polyline.on('click', handleSelectCableForAnalyzer);
+        cableGlow.on('click', handleSelectCableForAnalyzer);
+      }
 
       cableGlow.addTo(cablesLayer.current);
       polyline.addTo(cablesLayer.current);
     });
-  }, [currentNetwork?.cables, isMapReady, handleStartEditCablePath, resolveNetworkEndpointById]);
+  }, [currentNetwork?.cables, isMapReady, handleStartEditCablePath, resolveNetworkEndpointById, isDrawingMode]);
 
   // Handlers para adicionar caixa
   const handleAddBox = () => {
