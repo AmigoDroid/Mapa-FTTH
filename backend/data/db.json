@@ -8,7 +8,7 @@
       "slug": "fabreutelecom",
       "status": "active",
       "createdAt": "2026-03-04T23:52:34.837Z",
-      "updatedAt": "2026-03-04T23:54:13.616Z",
+      "updatedAt": "2026-03-10T16:41:01.872Z",
       "license": {
         "id": "lic-129e62c2",
         "key": "FTTH-129E62C2",
@@ -89,11 +89,11 @@
           "id": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
           "username": "wandson",
           "displayName": "Wandson TI",
-          "passwordHash": "939f2911e451f195cca51ec3f2ab1a00:6c71b53296f5b23baae34dc814295456a092718a4df5ef191f8fde4068a67e179e41d26ae5754a4787b277af14ebe0fdbcaf7da4b767b24931068cc9c9b9efab",
+          "passwordHash": "b293c018603082f10da2118de679c319:34e5eea6e62032c6c82f40e88a138a9f6da5cf9bc412f6578bb62ce0a77dbbcac78b1af5149b30462dab1df26e067cc780d8a02f02fea65a27ed8730b6a017b6",
           "role": "manager",
           "active": true,
           "createdAt": "2026-03-04T23:52:34.837Z",
-          "updatedAt": "2026-03-04T23:52:34.837Z"
+          "updatedAt": "2026-03-10T16:18:20.934Z"
         }
       ],
       "projects": [
@@ -110,17 +110,116 @@
             "cables": [],
             "fusions": [],
             "createdAt": "2026-03-04T23:52:56.113Z",
-            "updatedAt": "2026-03-04T23:54:13.613Z",
+            "updatedAt": "2026-03-10T16:41:01.866Z",
             "description": "descrição"
           },
           "createdAt": "2026-03-04T23:52:56.113Z",
-          "updatedAt": "2026-03-04T23:54:13.613Z",
+          "updatedAt": "2026-03-10T16:41:01.866Z",
           "createdBy": "sys-root-admin",
           "updatedBy": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
           "description": "descrição"
         }
       ],
       "auditLogs": [
+        {
+          "id": "0f985cb6-45c0-45a7-bc74-c6862e8d9555",
+          "createdAt": "2026-03-10T16:41:01.872Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "5c7ed99c-1045-46c9-a655-17cd61375da8",
+          "createdAt": "2026-03-10T16:32:39.495Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "80fad2a5-3652-4a32-9a86-401ecc24f95d",
+          "createdAt": "2026-03-10T16:32:04.378Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "52c92e72-f81d-419e-a8e1-7ce70301e980",
+          "createdAt": "2026-03-10T16:29:50.380Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "1f200e03-21ff-4b73-9bdc-0559d782faf6",
+          "createdAt": "2026-03-10T16:26:09.056Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "7ef02302-5dda-4fdd-9035-11fbc7c93499",
+          "createdAt": "2026-03-10T16:25:49.143Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "e7143a1f-3963-46ff-9bf6-0347b88e9048",
+          "createdAt": "2026-03-10T16:20:45.675Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "16cf24a6-b939-4b96-aa94-d8558a5c47f8",
+          "createdAt": "2026-03-10T16:18:42.846Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "projects.update",
+          "targetType": "project",
+          "targetId": "e808c48d-8770-42d9-8d28-5171fd1f59b8",
+          "details": "Projeto Fabreu atualizado."
+        },
+        {
+          "id": "b3371f77-1a24-4856-bdb1-5407faef6749",
+          "createdAt": "2026-03-10T16:18:38.878Z",
+          "actorUserId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "actorUsername": "wandson",
+          "action": "auth.login",
+          "targetType": "session",
+          "targetId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "details": "Login do provedor realizado com sucesso."
+        },
+        {
+          "id": "7e9524db-a5e4-4bde-9541-97c8821d3445",
+          "createdAt": "2026-03-10T16:18:20.937Z",
+          "actorUsername": "admin",
+          "action": "users.update.system",
+          "targetType": "user",
+          "targetId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+          "details": "Usuario wandson atualizado pelo administrador global."
+        },
         {
           "id": "d2aef306-df54-4803-b2a9-9619a2618024",
           "createdAt": "2026-03-04T23:54:13.616Z",
@@ -163,6 +262,26 @@
     }
   ],
   "systemAuditLogs": [
+    {
+      "id": "2d554b34-a337-4a10-9c8f-3813041bf5bd",
+      "createdAt": "2026-03-10T16:18:20.937Z",
+      "actorType": "system",
+      "actorId": "sys-root-admin",
+      "action": "providers.users.update",
+      "targetType": "user",
+      "targetId": "2e9daaa6-d481-4038-bb89-0bf7081284fa",
+      "details": "Usuario wandson atualizado no provedor fabreu."
+    },
+    {
+      "id": "26be3ae2-5eff-448e-9b23-76c1aefe3b9c",
+      "createdAt": "2026-03-10T16:18:04.542Z",
+      "actorType": "system",
+      "actorId": "sys-root-admin",
+      "action": "system.auth.login",
+      "targetType": "session",
+      "targetId": "sys-root-admin",
+      "details": "Login global realizado."
+    },
     {
       "id": "2abca49f-7ee1-4d54-9e34-df0bed9043fe",
       "createdAt": "2026-03-04T23:53:15.662Z",

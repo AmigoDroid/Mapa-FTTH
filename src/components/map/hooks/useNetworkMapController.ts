@@ -26,6 +26,7 @@ import type {
   FiberAnalyzerSelectCableDetail,
   FiberTraceRequestDetail,
   FiberTraceSegment,
+  MapViewMode,
   MapPointRequestDetail,
   NearestCableHit,
   PendingAttachToCable,
@@ -38,6 +39,7 @@ import { toast } from 'sonner';
 declare global {
   interface Window {
     L: any;
+    google?: any;
   }
 }
 
@@ -59,6 +61,55 @@ const mapSessionState: {
   lastView: null,
 };
 
+const GOOGLE_MAPS_API_KEY = String(import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
+const GOOGLE_MAPS_SCRIPT_ID = 'google-maps-js-api';
+let googleMapsLoaderPromise: Promise<void> | null = null;
+
+const loadGoogleMapsApi = (apiKey: string): Promise<void> => {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Window indisponivel para carregar Google Maps.'));
+  }
+
+  if (window.google?.maps) {
+    return Promise.resolve();
+  }
+
+  if (!apiKey) {
+    return Promise.reject(new Error('VITE_GOOGLE_MAPS_API_KEY nao configurada.'));
+  }
+
+  if (googleMapsLoaderPromise) {
+    return googleMapsLoaderPromise;
+  }
+
+  googleMapsLoaderPromise = new Promise<void>((resolve, reject) => {
+    const existingScript = document.getElementById(GOOGLE_MAPS_SCRIPT_ID) as HTMLScriptElement | null;
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve(), { once: true });
+      existingScript.addEventListener(
+        'error',
+        () => reject(new Error('Falha ao carregar script do Google Maps.')),
+        { once: true }
+      );
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = GOOGLE_MAPS_SCRIPT_ID;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Falha ao carregar script do Google Maps.'));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    googleMapsLoaderPromise = null;
+    throw error;
+  });
+
+  return googleMapsLoaderPromise;
+};
+
 export function useNetworkMapController() {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<any>(null);
@@ -75,9 +126,7 @@ export function useNetworkMapController() {
   const lastMapDragEndedAtRef = useRef(0);
   const lastMapZoomEndedAtRef = useRef(0);
   const lastLayerInteractionAtRef = useRef(0);
-  const satelliteTileErrorCountRef = useRef(0);
-  const satelliteAutoZoomCooldownRef = useRef(false);
-  const satelliteZoomFallbackNotifiedRef = useRef(false);
+  const googleMapsErrorNotifiedRef = useRef(false);
   const findNearestCableForPositionRef = useRef<(position: Position) => NearestCableHit | null>(() => null);
   const findNearestBoxForPositionRef = useRef<(position: Position) => Position | null>(() => null);
   const pendingMapPointRequestIdRef = useRef<string | null>(null);
@@ -129,7 +178,7 @@ export function useNetworkMapController() {
   const [looseTubeCount, setLooseTubeCount] = useState(DEFAULT_CABLE_LOOSE_TUBE_COUNT);
   const [fibersPerTube, setFibersPerTube] = useState(DEFAULT_CABLE_FIBERS_PER_TUBE);
   const [clickMode, setClickMode] = useState<ClickMode>('normal');
-  const [mapView, setMapView] = useState<'street' | 'satellite'>('street');
+  const [mapView, setMapView] = useState<MapViewMode>('street');
   const [cableWaypoints, setCableWaypoints] = useState<Position[]>([]);
   const [editingCableId, setEditingCableId] = useState<string>('');
   const [pendingAttach, setPendingAttach] = useState<PendingAttachToCable | null>(null);
@@ -404,6 +453,19 @@ export function useNetworkMapController() {
     findNearestBoxForPositionRef.current = findNearestBoxForPosition;
   }, [findNearestBoxForPosition]);
 
+  const createGoogleBaseLayer = useCallback((view: MapViewMode) => {
+    const L = window.L;
+    const googleMutantFactory = L?.gridLayer?.googleMutant;
+    if (!googleMutantFactory) {
+      throw new Error('Leaflet.GoogleMutant nao carregado.');
+    }
+
+    return googleMutantFactory({
+      type: view === 'satellite' ? 'hybrid' : 'roadmap',
+      maxZoom: 21,
+    });
+  }, []);
+
   const attachEntityToCablePath = useCallback((cableId: string, entity: { kind: 'box' | 'reserve'; id: string; name: string }, anchor: { position: Position; pathIndex: number }) => {
     const cable = currentNetwork?.cables.find((item) => item.id === cableId);
     if (!cable) return;
@@ -597,151 +659,186 @@ export function useNetworkMapController() {
   // Inicializar mapa
   useEffect(() => {
     if (!mapRef.current || leafletMap.current) return;
-    
+
     const L = window.L;
     if (!L) {
       console.error('Leaflet not loaded');
       return;
     }
 
-    const bootstrapView = mapSessionState.lastView || MAP_DEFAULT_VIEW;
+    let disposed = false;
+    let disposeMap: (() => void) | null = null;
 
-    // Criar mapa centrado no Brasil
-    const map = L.map(mapRef.current, {
-      zoomControl: false,
-      inertia: false,
-      inertiaDeceleration: 3000,
-      inertiaMaxSpeed: 1200,
-    }).setView([bootstrapView.lat, bootstrapView.lng], bootstrapView.zoom, { animate: false });
-    
-    // Adicionar camada de tiles
-    tileLayer.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
-      maxZoom: 19,
-    }).addTo(map);
-
-    // Camadas para marcadores e cabos
-    markersLayer.current = L.layerGroup().addTo(map);
-    cablesLayer.current = L.layerGroup().addTo(map);
-    fiberTraceLayer.current = L.layerGroup().addTo(map);
-
-    leafletMap.current = map;
-    setIsMapReady(true);
-    if (mapSessionState.lastView) {
-      hasUserInteractedWithMapRef.current = true;
-    }
-
-    const markMapInteraction = () => {
-      hasUserInteractedWithMapRef.current = true;
-    };
-    const persistMapView = () => {
-      const center = map.getCenter?.();
-      const zoom = Number(map.getZoom?.());
-      if (!center || !Number.isFinite(zoom)) return;
-      mapSessionState.lastView = { lat: center.lat, lng: center.lng, zoom };
-    };
-    const scheduleInvalidateSize = () => {
-      if (!leafletMap.current) return;
-      if (invalidateSizeTimerRef.current) {
-        window.clearTimeout(invalidateSizeTimerRef.current);
-      }
-      invalidateSizeTimerRef.current = window.setTimeout(() => {
-        if (!leafletMap.current) return;
-        leafletMap.current.invalidateSize({ pan: false, animate: false });
-        invalidateSizeTimerRef.current = null;
-      }, 90);
-    };
-
-    map.on('dragstart', markMapInteraction);
-    map.on('mousedown', markMapInteraction);
-    map.on('touchstart', markMapInteraction);
-    map.on('zoomstart', markMapInteraction);
-    map.on('dragend', () => {
-      lastMapDragEndedAtRef.current = Date.now();
-    });
-    map.on('zoomend', () => {
-      lastMapZoomEndedAtRef.current = Date.now();
-      persistMapView();
-    });
-    map.on('moveend', persistMapView);
-    window.addEventListener('resize', scheduleInvalidateSize);
-    if (typeof ResizeObserver !== 'undefined') {
-      const observer = new ResizeObserver(() => {
-        scheduleInvalidateSize();
-      });
-      observer.observe(mapRef.current);
-      resizeObserverRef.current = observer;
-    }
-    scheduleInvalidateSize();
-
-    // Evento de clique no mapa
-    map.on('click', (e: any) => {
-      const now = Date.now();
-      if (now - lastMapDragEndedAtRef.current < 220) return;
-      if (now - lastMapZoomEndedAtRef.current < 180) return;
-      if (now - lastLayerInteractionAtRef.current < 220) return;
-
-      map.stop?.();
-      hasUserInteractedWithMapRef.current = true;
-      const { lat, lng } = e.latlng;
-      const pendingRequestId = pendingMapPointRequestIdRef.current;
-
-      if (pendingRequestId) {
-        window.dispatchEvent(
-          new CustomEvent('ftth:map-point-selected', {
-            detail: {
-              requestId: pendingRequestId,
-              position: { lat, lng },
-            },
-          })
-        );
-        pendingMapPointRequestIdRef.current = null;
-        setMapPointPickActive(false);
+    const initMap = async () => {
+      try {
+        await loadGoogleMapsApi(GOOGLE_MAPS_API_KEY);
+      } catch (error) {
+        console.error('Nao foi possivel carregar a API do Google Maps.', error);
+        if (!googleMapsErrorNotifiedRef.current) {
+          googleMapsErrorNotifiedRef.current = true;
+          toast.error('Configure VITE_GOOGLE_MAPS_API_KEY para carregar o Google Maps.');
+        }
         return;
       }
-      
-      if (clickModeRef.current === 'addBox') {
-        const clickPosition = { lat, lng };
-        const nearest = findNearestCableForPositionRef.current(clickPosition);
-        setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
-        setNewBoxPosition(nearest ? nearest.position : clickPosition);
-        setShowAddBox(true);
-        setClickMode('normal');
-      } else if (clickModeRef.current === 'addPop') {
-        setNewPopPosition({ lat, lng });
-        setShowAddPop(true);
-        setClickMode('normal');
-      } else if (clickModeRef.current === 'addReserve') {
-        const clickPosition = { lat, lng };
-        const nearest = findNearestCableForPositionRef.current(clickPosition);
-        setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
-        setNewReservePosition(nearest ? nearest.position : clickPosition);
-        setShowAddReserve(true);
-        setClickMode('normal');
-      } else if (clickModeRef.current === 'addCable' || clickModeRef.current === 'editCable') {
-        const clickPosition = { lat, lng };
-        const snapped = findNearestBoxForPositionRef.current(clickPosition);
-        setCableWaypoints((prev: Position[]) => [...prev, snapped || clickPosition]);
+
+      if (disposed || !mapRef.current || leafletMap.current) return;
+
+      const bootstrapView = mapSessionState.lastView || MAP_DEFAULT_VIEW;
+
+      const map = L.map(mapRef.current, {
+        zoomControl: false,
+        inertia: false,
+        inertiaDeceleration: 3000,
+        inertiaMaxSpeed: 1200,
+      }).setView([bootstrapView.lat, bootstrapView.lng], bootstrapView.zoom, { animate: false });
+
+      let initialBaseLayer: any;
+      try {
+        initialBaseLayer = createGoogleBaseLayer('street');
+      } catch (error) {
+        console.error('Nao foi possivel inicializar camada Google Maps.', error);
+        if (!googleMapsErrorNotifiedRef.current) {
+          googleMapsErrorNotifiedRef.current = true;
+          toast.error('Plugin Google Maps indisponivel. Verifique o carregamento do mapa.');
+        }
+        map.remove();
+        return;
       }
-    });
+
+      tileLayer.current = initialBaseLayer.addTo(map);
+
+      markersLayer.current = L.layerGroup().addTo(map);
+      cablesLayer.current = L.layerGroup().addTo(map);
+      fiberTraceLayer.current = L.layerGroup().addTo(map);
+
+      leafletMap.current = map;
+      setIsMapReady(true);
+      if (mapSessionState.lastView) {
+        hasUserInteractedWithMapRef.current = true;
+      }
+
+      const markMapInteraction = () => {
+        hasUserInteractedWithMapRef.current = true;
+      };
+      const persistMapView = () => {
+        const center = map.getCenter?.();
+        const zoom = Number(map.getZoom?.());
+        if (!center || !Number.isFinite(zoom)) return;
+        mapSessionState.lastView = { lat: center.lat, lng: center.lng, zoom };
+      };
+      const scheduleInvalidateSize = () => {
+        if (!leafletMap.current) return;
+        if (invalidateSizeTimerRef.current) {
+          window.clearTimeout(invalidateSizeTimerRef.current);
+        }
+        invalidateSizeTimerRef.current = window.setTimeout(() => {
+          if (!leafletMap.current) return;
+          leafletMap.current.invalidateSize({ pan: false, animate: false });
+          invalidateSizeTimerRef.current = null;
+        }, 90);
+      };
+
+      map.on('dragstart', markMapInteraction);
+      map.on('mousedown', markMapInteraction);
+      map.on('touchstart', markMapInteraction);
+      map.on('zoomstart', markMapInteraction);
+      map.on('dragend', () => {
+        lastMapDragEndedAtRef.current = Date.now();
+      });
+      map.on('zoomend', () => {
+        lastMapZoomEndedAtRef.current = Date.now();
+        persistMapView();
+      });
+      map.on('moveend', persistMapView);
+      window.addEventListener('resize', scheduleInvalidateSize);
+      if (typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => {
+          scheduleInvalidateSize();
+        });
+        observer.observe(mapRef.current);
+        resizeObserverRef.current = observer;
+      }
+      scheduleInvalidateSize();
+
+      map.on('click', (e: any) => {
+        const now = Date.now();
+        if (now - lastMapDragEndedAtRef.current < 220) return;
+        if (now - lastMapZoomEndedAtRef.current < 180) return;
+        if (now - lastLayerInteractionAtRef.current < 220) return;
+
+        map.stop?.();
+        hasUserInteractedWithMapRef.current = true;
+        const { lat, lng } = e.latlng;
+        const pendingRequestId = pendingMapPointRequestIdRef.current;
+
+        if (pendingRequestId) {
+          window.dispatchEvent(
+            new CustomEvent('ftth:map-point-selected', {
+              detail: {
+                requestId: pendingRequestId,
+                position: { lat, lng },
+              },
+            })
+          );
+          pendingMapPointRequestIdRef.current = null;
+          setMapPointPickActive(false);
+          return;
+        }
+
+        if (clickModeRef.current === 'addBox') {
+          const clickPosition = { lat, lng };
+          const nearest = findNearestCableForPositionRef.current(clickPosition);
+          setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
+          setNewBoxPosition(nearest ? nearest.position : clickPosition);
+          setShowAddBox(true);
+          setClickMode('normal');
+        } else if (clickModeRef.current === 'addPop') {
+          setNewPopPosition({ lat, lng });
+          setShowAddPop(true);
+          setClickMode('normal');
+        } else if (clickModeRef.current === 'addReserve') {
+          const clickPosition = { lat, lng };
+          const nearest = findNearestCableForPositionRef.current(clickPosition);
+          setPendingAttach(nearest ? { cableId: nearest.cableId, position: nearest.position, pathIndex: nearest.pathIndex } : null);
+          setNewReservePosition(nearest ? nearest.position : clickPosition);
+          setShowAddReserve(true);
+          setClickMode('normal');
+        } else if (clickModeRef.current === 'addCable' || clickModeRef.current === 'editCable') {
+          const clickPosition = { lat, lng };
+          const snapped = findNearestBoxForPositionRef.current(clickPosition);
+          setCableWaypoints((prev: Position[]) => [...prev, snapped || clickPosition]);
+        }
+      });
+
+      disposeMap = () => {
+        window.removeEventListener('resize', scheduleInvalidateSize);
+        if (resizeObserverRef.current) {
+          resizeObserverRef.current.disconnect();
+          resizeObserverRef.current = null;
+        }
+        if (invalidateSizeTimerRef.current) {
+          window.clearTimeout(invalidateSizeTimerRef.current);
+          invalidateSizeTimerRef.current = null;
+        }
+        map.remove();
+        leafletMap.current = null;
+        tileLayer.current = null;
+        markersLayer.current = null;
+        cablesLayer.current = null;
+        tempPolylineRef.current = null;
+        fiberTraceLayer.current = null;
+      };
+    };
+
+    void initMap();
 
     return () => {
-      window.removeEventListener('resize', scheduleInvalidateSize);
-      if (resizeObserverRef.current) {
-        resizeObserverRef.current.disconnect();
-        resizeObserverRef.current = null;
+      disposed = true;
+      if (disposeMap) {
+        disposeMap();
       }
-      if (invalidateSizeTimerRef.current) {
-        window.clearTimeout(invalidateSizeTimerRef.current);
-        invalidateSizeTimerRef.current = null;
-      }
-      map.remove();
-      leafletMap.current = null;
-      tileLayer.current = null;
-      tempPolylineRef.current = null;
-      fiberTraceLayer.current = null;
     };
-  }, []);
+  }, [createGoogleBaseLayer]);
 
   useEffect(() => {
     clickModeRef.current = clickMode;
@@ -749,75 +846,26 @@ export function useNetworkMapController() {
 
   useEffect(() => {
     if (!leafletMap.current) return;
-    const L = window.L;
-    if (!L) return;
     const map = leafletMap.current;
+    let nextLayer: any;
+
+    try {
+      nextLayer = createGoogleBaseLayer(mapView);
+    } catch (error) {
+      console.error('Nao foi possivel alternar camada do Google Maps.', error);
+      if (!googleMapsErrorNotifiedRef.current) {
+        googleMapsErrorNotifiedRef.current = true;
+        toast.error('Plugin Google Maps indisponivel. Verifique o carregamento do mapa.');
+      }
+      return;
+    }
 
     if (tileLayer.current) {
       map.removeLayer(tileLayer.current);
     }
 
-    satelliteTileErrorCountRef.current = 0;
-    satelliteAutoZoomCooldownRef.current = false;
-
-    let handleSatelliteTileError: (() => void) | null = null;
-    let handleSatelliteTileLoad: (() => void) | null = null;
-
-    if (mapView === 'satellite') {
-      const satelliteLayer = L.tileLayer(
-        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        {
-          attribution: 'Tiles &copy; Esri',
-          maxZoom: 19,
-          maxNativeZoom: 19,
-        }
-      );
-      handleSatelliteTileLoad = () => {
-        satelliteTileErrorCountRef.current = Math.max(0, satelliteTileErrorCountRef.current - 1);
-      };
-      handleSatelliteTileError = () => {
-        const isDrawingMode = clickModeRef.current === 'addCable' || clickModeRef.current === 'editCable';
-        if (isDrawingMode) return;
-
-        const currentZoom = Number(map.getZoom?.()) || 0;
-        if (currentZoom <= 5) return;
-        if (satelliteAutoZoomCooldownRef.current) return;
-
-        satelliteTileErrorCountRef.current += 1;
-        if (satelliteTileErrorCountRef.current < 4) return;
-
-        satelliteAutoZoomCooldownRef.current = true;
-        satelliteTileErrorCountRef.current = 0;
-
-        if (!satelliteZoomFallbackNotifiedRef.current) {
-          satelliteZoomFallbackNotifiedRef.current = true;
-          toast.message('Limite de imagem no satélite para esta regiao. Reduza o zoom manualmente.');
-        }
-
-        window.setTimeout(() => {
-          satelliteAutoZoomCooldownRef.current = false;
-        }, 700);
-      };
-
-      satelliteLayer.on('tileload', handleSatelliteTileLoad);
-      satelliteLayer.on('tileerror', handleSatelliteTileError);
-      tileLayer.current = satelliteLayer;
-    } else {
-      tileLayer.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors',
-        maxZoom: 19,
-      });
-    }
-
-    const layer = tileLayer.current;
-    layer.addTo(map);
-
-    return () => {
-      if (mapView !== 'satellite') return;
-      if (handleSatelliteTileLoad) layer.off('tileload', handleSatelliteTileLoad);
-      if (handleSatelliteTileError) layer.off('tileerror', handleSatelliteTileError);
-    };
-  }, [mapView]);
+    tileLayer.current = nextLayer.addTo(map);
+  }, [mapView, createGoogleBaseLayer]);
 
   useEffect(() => {
     if (!leafletMap.current) return;

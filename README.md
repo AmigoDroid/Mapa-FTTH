@@ -11,6 +11,7 @@ Plataforma FTTH multi-tenant com frontend e backend separados.
 - Rota provedor: `/`
 - Rota admin global: `/system`
 - URL da API via `VITE_API_BASE_URL`
+- Chave do Google Maps via `VITE_GOOGLE_MAPS_API_KEY`
 
 ### Backend
 - API base: `/api`
@@ -47,13 +48,14 @@ npm run dev
 
 ## Deploy recomendado
 
-1. Deploy da API em serviço próprio (Render/Railway/Fly/etc.)
+1. Deploy da API em servico proprio (Render/Railway/Fly/etc.)
 2. Configure envs da API (`API_JWT_SECRET`, `SYSTEM_ADMIN_*`, `API_CORS_ORIGIN`, etc.)
 3. Deploy do frontend na Vercel
 4. No frontend da Vercel, defina:
 
 ```bash
 VITE_API_BASE_URL=https://SEU-BACKEND/api
+VITE_GOOGLE_MAPS_API_KEY=SUA_CHAVE_GOOGLE_MAPS
 ```
 
 5. Redeploy do frontend
