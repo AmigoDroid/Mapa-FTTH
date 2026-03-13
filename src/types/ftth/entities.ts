@@ -5,6 +5,28 @@ export interface Position {
   lng: number;
 }
 
+export type ExplorerMapEntityType = 'pop' | 'box' | 'reserve';
+
+export interface ExplorerFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+export interface ExplorerElement {
+  id: string;
+  name: string;
+  parentFolderId: string | null;
+  type: 'generic' | ExplorerMapEntityType;
+  linkedEntityId?: string;
+  linkedEntityType?: ExplorerMapEntityType;
+}
+
+export interface NetworkExplorerState {
+  folders: ExplorerFolder[];
+  elements: ExplorerElement[];
+}
+
 export interface City {
   id: string;
   name: string;
@@ -282,6 +304,7 @@ export interface Network {
   id: string;
   name: string;
   description?: string;
+  explorer?: NetworkExplorerState;
   cities: City[];
   pops: Pop[];
   boxes: Box[];

@@ -1,6 +1,16 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNetworkStore } from '@/store/networkStore';
-import type { Box as BoxType, Cable as CableType, City, Pop, Position } from '@/types/ftth';
+import type {
+  Box as BoxType,
+  Cable as CableType,
+  City,
+  ExplorerElement,
+  ExplorerFolder,
+  ExplorerMapEntityType,
+  NetworkExplorerState,
+  Pop,
+  Position,
+} from '@/types/ftth';
 import { resolveDefaultCableModel } from '@/types/ftth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -40,23 +50,6 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-type ExplorerMapEntityType = 'pop' | 'box' | 'reserve';
-
-interface ExplorerFolder {
-  id: string;
-  name: string;
-  parentId: string | null;
-}
-
-interface ExplorerElement {
-  id: string;
-  name: string;
-  parentFolderId: string | null;
-  type: 'generic' | ExplorerMapEntityType;
-  linkedEntityId?: string;
-  linkedEntityType?: ExplorerMapEntityType;
-}
-
 interface MapPointResponseDetail {
   requestId: string;
   position: Position;
@@ -90,6 +83,7 @@ export function NetworkPanel() {
     removePop,
     removeCable,
     removeReserve,
+    setExplorerState,
     selectPop,
     selectBox,
     addCity,
@@ -143,6 +137,9 @@ export function NetworkPanel() {
   const [suppressPopResetOnClose, setSuppressPopResetOnClose] = useState(false);
   const [suppressElementResetOnClose, setSuppressElementResetOnClose] = useState(false);
   const currentNetworkId = currentNetwork?.id || null;
+  const explorerStorageKey = currentNetworkId ? `ftth:explorer:${currentNetworkId}` : null;
+  const lastPersistedExplorerRef = useRef<string>('');
+  const localExplorerRef = useRef<NetworkExplorerState>({ folders: [], elements: [] });
   const systemFolderIds = useMemo(() => {
     const dynamicCityFolders = (currentNetwork?.cities || []).map((city) => `city:${city.id}`);
     return new Set<string>([...SYSTEM_FOLDER_STATIC_IDS, ...dynamicCityFolders]);
@@ -157,6 +154,59 @@ export function NetworkPanel() {
     },
     [systemFolderIds]
   );
+
+  const serializeExplorer = useCallback(
+    (value: NetworkExplorerState) => JSON.stringify(value),
+    []
+  );
+
+  const sanitizeExplorerState = useCallback(
+    (input?: Partial<NetworkExplorerState> | null): NetworkExplorerState => {
+      const rawFolders = Array.isArray(input?.folders) ? input!.folders : [];
+      const validCustomIds = new Set(rawFolders.map((folder) => folder.id));
+
+      const sanitizedFolders = rawFolders
+        .filter((folder) => Boolean(folder?.id) && isValidCustomFolderName(folder?.name || ''))
+        .map((folder) => ({
+          id: folder.id,
+          name: folder.name.trim(),
+          parentId:
+            folder.parentId === folder.id
+              ? null
+              : normalizeExplorerParent(folder.parentId, validCustomIds),
+        }));
+      const sanitizedFolderIds = new Set(sanitizedFolders.map((folder) => folder.id));
+
+      const rawElements = Array.isArray(input?.elements) ? input!.elements : [];
+      const sanitizedElements = rawElements
+        .filter((element) => Boolean(element?.id) && isValidCustomFolderName(element?.name || ''))
+        .map((element) => ({
+          ...element,
+          name: element.name.trim(),
+          parentFolderId: normalizeExplorerParent(element.parentFolderId, sanitizedFolderIds),
+        }));
+
+      return { folders: sanitizedFolders, elements: sanitizedElements };
+    },
+    [normalizeExplorerParent]
+  );
+
+  const readExplorerFromLocalStorage = useCallback((): NetworkExplorerState | null => {
+    if (!explorerStorageKey) return null;
+    const saved = localStorage.getItem(explorerStorageKey);
+    if (!saved) return null;
+
+    try {
+      const parsed = JSON.parse(saved) as Partial<NetworkExplorerState>;
+      return sanitizeExplorerState(parsed);
+    } catch {
+      return null;
+    }
+  }, [explorerStorageKey, sanitizeExplorerState]);
+
+  useEffect(() => {
+    localExplorerRef.current = { folders, elements };
+  }, [folders, elements]);
 
   const handleCreateNetwork = () => {
     if (!newNetworkName.trim()) return;
@@ -267,49 +317,43 @@ export function NetworkPanel() {
     if (!currentNetworkId) {
       setFolders([]);
       setElements([]);
+      lastPersistedExplorerRef.current = '';
       return;
     }
 
-    const saved = localStorage.getItem(`ftth:explorer:${currentNetworkId}`);
-    if (!saved) {
-      setFolders([]);
-      setElements([]);
+    const explorerFromNetwork = currentNetwork?.explorer
+      ? sanitizeExplorerState(currentNetwork.explorer)
+      : null;
+    const explorerFromStorage = !explorerFromNetwork ? readExplorerFromLocalStorage() : null;
+    const nextExplorer =
+      explorerFromNetwork || explorerFromStorage || { folders: [], elements: [] };
+
+    const serializedNext = serializeExplorer(nextExplorer);
+    const serializedLocal = serializeExplorer(localExplorerRef.current);
+
+    if (serializedNext !== serializedLocal) {
+      setFolders(nextExplorer.folders);
+      setElements(nextExplorer.elements);
+    }
+
+    if (explorerFromNetwork) {
+      lastPersistedExplorerRef.current = serializedNext;
       return;
     }
 
-    try {
-      const parsed = JSON.parse(saved) as { folders?: ExplorerFolder[]; elements?: ExplorerElement[] };
-      const rawFolders = Array.isArray(parsed.folders) ? parsed.folders : [];
-      const validCustomIds = new Set(rawFolders.map((folder) => folder.id));
-
-      const sanitizedFolders = rawFolders
-        .filter((folder) => Boolean(folder?.id) && isValidCustomFolderName(folder?.name || ''))
-        .map((folder) => ({
-          id: folder.id,
-          name: folder.name.trim(),
-          parentId:
-            folder.parentId === folder.id
-              ? null
-              : normalizeExplorerParent(folder.parentId, validCustomIds),
-        }));
-      const sanitizedFolderIds = new Set(sanitizedFolders.map((folder) => folder.id));
-
-      const rawElements = Array.isArray(parsed.elements) ? parsed.elements : [];
-      const sanitizedElements = rawElements
-        .filter((element) => Boolean(element?.id) && isValidCustomFolderName(element?.name || ''))
-        .map((element) => ({
-          ...element,
-          name: element.name.trim(),
-          parentFolderId: normalizeExplorerParent(element.parentFolderId, sanitizedFolderIds),
-        }));
-
-      setFolders(sanitizedFolders);
-      setElements(sanitizedElements);
-    } catch {
-      setFolders([]);
-      setElements([]);
+    if (explorerFromStorage) {
+      lastPersistedExplorerRef.current = '';
+      return;
     }
-  }, [currentNetworkId, normalizeExplorerParent, systemFolderIds]);
+
+    lastPersistedExplorerRef.current = serializedNext;
+  }, [
+    currentNetworkId,
+    currentNetwork?.explorer,
+    readExplorerFromLocalStorage,
+    sanitizeExplorerState,
+    serializeExplorer,
+  ]);
 
   useEffect(() => {
     if (!currentNetwork) return;
@@ -332,11 +376,27 @@ export function NetworkPanel() {
 
   useEffect(() => {
     if (!currentNetwork) return;
-    localStorage.setItem(
-      `ftth:explorer:${currentNetwork.id}`,
-      JSON.stringify({ folders, elements })
-    );
-  }, [currentNetwork, folders, elements]);
+
+    const explorerState: NetworkExplorerState = { folders, elements };
+    const serialized = serializeExplorer(explorerState);
+
+    if (explorerStorageKey) {
+      localStorage.setItem(explorerStorageKey, serialized);
+    }
+
+    if (serialized === lastPersistedExplorerRef.current) return;
+    const saved = setExplorerState(explorerState);
+    if (saved) {
+      lastPersistedExplorerRef.current = serialized;
+    }
+  }, [
+    currentNetwork,
+    folders,
+    elements,
+    explorerStorageKey,
+    serializeExplorer,
+    setExplorerState,
+  ]);
 
   const folderChildrenMap = useMemo(() => {
     const map = new Map<string | null, ExplorerFolder[]>();

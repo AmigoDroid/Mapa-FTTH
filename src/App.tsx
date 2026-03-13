@@ -23,6 +23,7 @@ function App() {
   const hydratedUserIdRef = useRef<string | null>(null);
   const autosaveErrorAtRef = useRef(0);
   const projectScope = provider?.id || 'default';
+  const autosaveDelayMs = 300;
 
   const refreshProjects = useCallback(async (silent = false) => {
     try {
@@ -89,14 +90,14 @@ function App() {
         .then(() => {
           setLastOpenedProjectId(currentNetwork.id, projectScope);
         })
-        .catch(() => {
+        .catch((error) => {
           const now = Date.now();
           if (now - autosaveErrorAtRef.current > 3000) {
             autosaveErrorAtRef.current = now;
-            toast.error('Falha ao sincronizar projeto com a API.');
+            toast.error(toErrorMessage(error, 'Falha ao sincronizar projeto com a API.'));
           }
         });
-    }, 500);
+    }, autosaveDelayMs);
 
     return () => {
       window.clearTimeout(timeoutId);

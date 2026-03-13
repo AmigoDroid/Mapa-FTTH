@@ -58,6 +58,7 @@ export const createEmptyNetwork = (projectId, name, description) => {
     id: projectId,
     name,
     description: description || undefined,
+    explorer: { folders: [], elements: [] },
     cities: [],
     pops: [],
     boxes: [],

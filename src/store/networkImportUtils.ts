@@ -1,6 +1,7 @@
 import type {
   Cable,
   Network,
+  NetworkExplorerState,
   OltAuxPort,
   OltPon,
   OltUplink,
@@ -94,6 +95,11 @@ const normalizeVlanStatus = (status: string | undefined): PopVlan['status'] => {
   if (status === 'active' || status === 'planned' || status === 'retired') return status;
   return 'active';
 };
+
+const normalizeExplorerState = (explorer: NetworkExplorerState | undefined): NetworkExplorerState => ({
+  folders: Array.isArray(explorer?.folders) ? explorer!.folders : [],
+  elements: Array.isArray(explorer?.elements) ? explorer!.elements : [],
+});
 
 const normalizePopVlans = (vlans: PopVlan[] | undefined): PopVlan[] => {
   const uniqueVlanIds = new Set<number>();
@@ -223,6 +229,7 @@ const normalizePop = (pop: Pop): Pop => {
 
 export const normalizeImportedNetwork = (networkRaw: Network): Network => ({
   ...networkRaw,
+  explorer: normalizeExplorerState(networkRaw.explorer),
   cities: networkRaw.cities || [],
   pops: (networkRaw.pops || []).map((pop) => normalizePop(pop)),
   reserves: networkRaw.reserves || [],

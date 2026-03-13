@@ -17,7 +17,7 @@ export const dbReadyPromise = ensureDb();
 export const app = express();
 
 app.use(cors({ origin: corsOrigin }));
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 app.use(async (_req, _res, next) => {
   try {
@@ -40,4 +40,3 @@ app.use((error, _req, res, _next) => {
         : undefined,
   });
 });
-

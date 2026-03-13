@@ -24,6 +24,7 @@ import type {
   Position, 
   ContinuityTest,
   Client,
+  NetworkExplorerState,
 } from '@/types/ftth';
 import { getCableModelsByType, resolveDefaultCableModel } from '@/types/ftth';
 import {
@@ -78,6 +79,7 @@ interface NetworkState {
 
 interface NetworkActions {
   setCurrentNetwork: (network: Network) => void;
+  setExplorerState: (explorer: NetworkExplorerState) => boolean;
   createNetwork: (name: string, description?: string) => Network | null;
   addBox: (box: Omit<Box, 'id' | 'fibers' | 'fusions' | 'inputCables' | 'outputCables'>) => Box | null;
   addCity: (city: Omit<City, 'id' | 'popIds'>) => City | null;
@@ -508,11 +510,28 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     setState(prev => ({ ...prev, currentNetwork: network }));
   }, []);
 
+  const setExplorerState = useCallback((explorer: NetworkExplorerState) => {
+    if (!state.currentNetwork) return false;
+    setState((prev) => {
+      if (!prev.currentNetwork) return prev;
+      return {
+        ...prev,
+        currentNetwork: {
+          ...prev.currentNetwork,
+          explorer,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+    return true;
+  }, [state.currentNetwork]);
+
   const createNetwork = useCallback((name: string, description?: string) => {
     const network: Network = {
       id: generateId(),
       name,
       description,
+      explorer: { folders: [], elements: [] },
       cities: [],
       pops: [],
       boxes: [],
@@ -1960,6 +1979,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const value: NetworkState & NetworkActions = {
     ...state,
     setCurrentNetwork: guardAction('network.read', setCurrentNetwork, undefined),
+    setExplorerState: guardAction('network.update', setExplorerState, false),
     createNetwork: guardAction('network.create', createNetwork, null),
     addCity: guardAction('network.update', addCity, null),
     addPop: guardAction('network.update', addPop, null),
