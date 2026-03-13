@@ -1,4 +1,10 @@
-import { AUTH_ROLES, ROLE_DIRECT_PERMISSIONS, ROLE_LABELS, ROLE_PARENT } from './constants.js';
+import {
+  ALL_PERMISSIONS,
+  AUTH_ROLES,
+  ROLE_DIRECT_PERMISSIONS,
+  ROLE_LABELS,
+  ROLE_PARENT,
+} from './constants.js';
 
 export const roleExists = (roleId) => AUTH_ROLES.includes(roleId);
 
@@ -36,3 +42,24 @@ export const createDefaultRoles = (nowIso) =>
     createdAt: nowIso,
     updatedAt: nowIso,
   }));
+
+export const normalizePermissions = (permissions) => {
+  if (!Array.isArray(permissions)) return null;
+  const normalized = [];
+  const seen = new Set();
+  permissions.forEach((permission) => {
+    const value = String(permission).trim();
+    if (!ALL_PERMISSIONS.includes(value)) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    normalized.push(value);
+  });
+  return normalized;
+};
+
+export const resolveUserPermissions = (provider, user) => {
+  if (Array.isArray(user?.permissions)) {
+    return normalizePermissions(user.permissions) ?? [];
+  }
+  return listPermissionsForRole(provider.roles || [], user.role);
+};

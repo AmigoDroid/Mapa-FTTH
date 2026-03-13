@@ -26,6 +26,7 @@ import {
   ALL_AUTH_PERMISSIONS,
   PERMISSION_LABELS,
   ROLE_LABELS,
+  listPermissionsForRole,
   type AuthPermission,
   type AuthRole,
 } from '@/auth/permissions';
@@ -33,11 +34,20 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSystemAuth } from '@/store/systemAuthStore';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -45,6 +55,16 @@ const LICENSE_WARNING_DAYS = 30;
 const AUDIT_LIMIT_OPTIONS = [100, 200, 500, 1000] as const;
 const ROLE_ORDER: AuthRole[] = ['viewer', 'editor', 'manager', 'admin'];
 const ALL_PERMISSION_SET = new Set<AuthPermission>(ALL_AUTH_PERMISSIONS);
+const USER_PERMISSION_OPTIONS = ALL_AUTH_PERMISSIONS.filter(
+  (permission) => permission !== 'license.update'
+);
+const USER_PERMISSION_SET = new Set<AuthPermission>(USER_PERMISSION_OPTIONS);
+const PRIVILEGED_PERMISSION_SET = new Set<AuthPermission>([
+  'users.create',
+  'users.update',
+  'users.delete',
+  'roles.update',
+]);
 const NUMBER_FORMATTER = new Intl.NumberFormat('pt-BR');
 const PASSWORD_MIN_LENGTH = 8;
 const USERNAME_REGEX = /^[a-z0-9._-]{3,40}$/;
@@ -107,6 +127,7 @@ interface ProviderUserDraft {
   role: AuthRole;
   active: boolean;
   password: string;
+  permissions: AuthPermission[] | null;
 }
 
 interface ProviderProjectDraft {
@@ -175,6 +196,7 @@ const mapUserToDraft = (user: ApiSessionUser): ProviderUserDraft => ({
   role: user.role,
   active: user.active,
   password: '',
+  permissions: Array.isArray(user.permissions) ? user.permissions : null,
 });
 
 const mapProjectToDraft = (project: ApiProjectSummary): ProviderProjectDraft => ({
@@ -205,6 +227,12 @@ const mapRolesToDrafts = (roles: ApiRole[]): Record<AuthRole, AuthPermission[]> 
     next[role.id] = normalizePermissions(role.directPermissions);
   });
   return next;
+};
+
+const getRoleEffectivePermissions = (roles: ApiRole[], roleId: AuthRole): AuthPermission[] => {
+  const role = roles.find((item) => item.id === roleId);
+  if (role) return normalizePermissions(role.effectivePermissions);
+  return listPermissionsForRole(roleId);
 };
 
 const getDaysToExpire = (expiresAt: string): number | null => {
@@ -382,6 +410,12 @@ export function SystemDashboard() {
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState<AuthRole>('manager');
   const [newUserActive, setNewUserActive] = useState(true);
+  const [newUserUseCustomPermissions, setNewUserUseCustomPermissions] = useState(false);
+  const [newUserPermissions, setNewUserPermissions] = useState<AuthPermission[]>([]);
+
+  const [userEditor, setUserEditor] = useState<ProviderUserDraft | null>(null);
+  const [userEditorTab, setUserEditorTab] = useState<'details' | 'permissions'>('details');
+  const [showRoleManagement, setShowRoleManagement] = useState(false);
 
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDescription, setNewProjectDescription] = useState('');
@@ -498,12 +532,12 @@ export function SystemDashboard() {
 
         if (providerUserFilter === 'active' && !user.active) return false;
         if (providerUserFilter === 'inactive' && user.active) return false;
-        if (
-          providerUserFilter === 'privileged' &&
-          user.role !== 'manager' &&
-          user.role !== 'admin'
-        ) {
-          return false;
+        if (providerUserFilter === 'privileged') {
+          const hasPrivilegedRole = user.role === 'manager' || user.role === 'admin';
+          const hasPrivilegedPermissions =
+            Array.isArray(user.permissions) &&
+            user.permissions.some((permission) => PRIVILEGED_PERMISSION_SET.has(permission));
+          if (!hasPrivilegedRole && !hasPrivilegedPermissions) return false;
         }
         return true;
       }),
@@ -575,6 +609,22 @@ export function SystemDashboard() {
   const selectedProviderRisk = useMemo(
     () => (selectedProvider ? getProviderRiskData(selectedProvider) : null),
     [selectedProvider]
+  );
+
+  const getRolePermissions = useCallback(
+    (roleId: AuthRole) =>
+      getRoleEffectivePermissions(providerRoles, roleId).filter((permission) =>
+        USER_PERMISSION_SET.has(permission)
+      ),
+    [providerRoles]
+  );
+
+  const getUserEffectivePermissions = useCallback(
+    (user: ProviderUserDraft) =>
+      user.permissions
+        ? user.permissions.filter((permission) => USER_PERMISSION_SET.has(permission))
+        : getRolePermissions(user.role),
+    [getRolePermissions]
   );
 
   const loadData = useCallback(async () => {
@@ -655,6 +705,10 @@ export function SystemDashboard() {
     setNewUserPassword('');
     setNewUserRole('manager');
     setNewUserActive(true);
+    setNewUserUseCustomPermissions(false);
+    setNewUserPermissions([]);
+    setUserEditor(null);
+    setUserEditorTab('details');
     setNewProjectName('');
     setNewProjectDescription('');
     setProviderUserSearch('');
@@ -700,6 +754,17 @@ export function SystemDashboard() {
     const next = new Set(current);
     if (enabled) next.add(featureId);
     else next.delete(featureId);
+    return Array.from(next);
+  };
+
+  const togglePermission = (
+    current: AuthPermission[],
+    permission: AuthPermission,
+    enabled: boolean
+  ) => {
+    const next = new Set(current);
+    if (enabled) next.add(permission);
+    else next.delete(permission);
     return Array.from(next);
   };
 
@@ -821,7 +886,7 @@ export function SystemDashboard() {
   };
 
   const authorizeProvider = async () => {
-    if (!selectedProvider) return;
+    if (!selectedProvider) return false;
     if (!window.confirm(`Autorizar o provedor "${selectedProvider.name}" e liberar acesso?`)) return;
     try {
       await systemApi.authorizeProvider(selectedProvider.id);
@@ -858,13 +923,34 @@ export function SystemDashboard() {
     }
   };
 
-  const updateProviderUserDraft = (
-    userId: string,
-    patch: Partial<Omit<ProviderUserDraft, 'id'>>
+  const openUserEditor = (
+    user: ProviderUserDraft,
+    tab: 'details' | 'permissions' = 'details'
   ) => {
-    setProviderUsers((current) =>
-      current.map((user) => (user.id === userId ? { ...user, ...patch } : user))
-    );
+    setUserEditor({ ...user, password: '' });
+    setUserEditorTab(tab);
+  };
+
+  const closeUserEditor = () => {
+    setUserEditor(null);
+    setUserEditorTab('details');
+  };
+
+  const updateUserEditor = (patch: Partial<Omit<ProviderUserDraft, 'id'>>) => {
+    setUserEditor((current) => (current ? { ...current, ...patch } : current));
+  };
+
+  const toggleProviderUserActive = async (user: ProviderUserDraft) => {
+    if (!selectedProvider) return;
+    try {
+      await systemApi.updateProviderUser(selectedProvider.id, user.id, {
+        active: !user.active,
+      });
+      await refreshSelectedProviderData();
+      toast.success(user.active ? 'Usuario revogado.' : 'Usuario reativado.');
+    } catch (error) {
+      toast.error(toErrorMessage(error, 'Falha ao atualizar usuario.'));
+    }
   };
 
   const handleCreateProviderUser = async (event: FormEvent<HTMLFormElement>) => {
@@ -892,18 +978,24 @@ export function SystemDashboard() {
     }
 
     try {
+      const permissions = newUserUseCustomPermissions
+        ? newUserPermissions.filter((permission) => USER_PERMISSION_SET.has(permission))
+        : null;
       await systemApi.createProviderUser(selectedProvider.id, {
         username,
         displayName,
         password,
         role: newUserRole,
         active: newUserActive,
+        ...(newUserUseCustomPermissions ? { permissions } : {}),
       });
       setNewUserUsername('');
       setNewUserDisplayName('');
       setNewUserPassword('');
       setNewUserRole('manager');
       setNewUserActive(true);
+      setNewUserUseCustomPermissions(false);
+      setNewUserPermissions([]);
       await refreshSelectedProviderData();
       toast.success('Usuario criado no provedor.');
     } catch (error) {
@@ -917,33 +1009,40 @@ export function SystemDashboard() {
     const displayName = draft.displayName.trim();
     if (!username || !displayName) {
       toast.error('Usuario de acesso e nome sao obrigatorios.');
-      return;
+      return false;
     }
     if (!USERNAME_REGEX.test(username)) {
       toast.error('Usuario de acesso invalido. Use 3 a 40 caracteres sem espacos.');
-      return;
+      return false;
     }
     if (displayName.length < DISPLAY_NAME_MIN_LENGTH) {
       toast.error('Nome do usuario deve ter ao menos 3 caracteres.');
-      return;
+      return false;
     }
     if (draft.password.trim() && draft.password.trim().length < PASSWORD_MIN_LENGTH) {
       toast.error(`Nova senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`);
-      return;
+      return false;
     }
 
     try {
+      const permissions =
+        draft.permissions === null
+          ? null
+          : draft.permissions.filter((permission) => USER_PERMISSION_SET.has(permission));
       await systemApi.updateProviderUser(selectedProvider.id, draft.id, {
         username,
         displayName,
         role: draft.role,
         active: draft.active,
+        permissions,
         ...(draft.password.trim() ? { password: draft.password.trim() } : {}),
       });
       await refreshSelectedProviderData();
       toast.success('Usuario atualizado.');
+      return true;
     } catch (error) {
       toast.error(toErrorMessage(error, 'Falha ao atualizar usuario.'));
+      return false;
     }
   };
 
@@ -953,6 +1052,9 @@ export function SystemDashboard() {
     try {
       await systemApi.deleteProviderUser(selectedProvider.id, draft.id);
       await refreshSelectedProviderData();
+      if (userEditor?.id === draft.id) {
+        closeUserEditor();
+      }
       toast.success('Usuario removido.');
     } catch (error) {
       toast.error(toErrorMessage(error, 'Falha ao remover usuario.'));
@@ -1819,111 +1921,163 @@ export function SystemDashboard() {
                         <SelectItem value="inactive">Inativo</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Button type="submit">Criar usuario</Button>
+                    <Button type="submit" className="md:col-span-2">
+                      Criar usuario
+                    </Button>
                   </form>
 
-                  <Input
-                    placeholder="Filtrar usuarios..."
-                    value={providerUserSearch}
-                    onChange={(event) => setProviderUserSearch(event.target.value)}
-                  />
-                  <Select
-                    value={providerUserFilter}
-                    onValueChange={(value) => setProviderUserFilter(value as ProviderUserFilter)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Filtro de usuarios" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Todos os usuarios</SelectItem>
-                      <SelectItem value="active">Somente ativos</SelectItem>
-                      <SelectItem value="inactive">Somente inativos</SelectItem>
-                      <SelectItem value="privileged">Somente gestores/admins</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">Permissoes personalizadas</p>
+                        <p className="text-xs text-slate-500">
+                          Ative para definir permissoes especificas no cadastro.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={newUserUseCustomPermissions}
+                        onCheckedChange={(checked) => {
+                          setNewUserUseCustomPermissions(checked);
+                          setNewUserPermissions(
+                            checked ? getRolePermissions(newUserRole) : []
+                          );
+                        }}
+                      />
+                    </div>
+                    {newUserUseCustomPermissions && (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {USER_PERMISSION_OPTIONS.map((permission) => (
+                          <label
+                            key={`new-user:${permission}`}
+                            className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white p-2"
+                          >
+                            <Checkbox
+                              checked={newUserPermissions.includes(permission)}
+                              onCheckedChange={(checked) =>
+                                setNewUserPermissions((current) =>
+                                  togglePermission(
+                                    current,
+                                    permission,
+                                    checked === true
+                                  )
+                                )
+                              }
+                            />
+                            <span className="text-xs text-slate-700">
+                              <span className="block font-medium text-slate-900">
+                                {PERMISSION_LABELS[permission]}
+                              </span>
+                              {permission}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid gap-2 md:grid-cols-[1fr_220px]">
+                    <Input
+                      placeholder="Filtrar usuarios..."
+                      value={providerUserSearch}
+                      onChange={(event) => setProviderUserSearch(event.target.value)}
+                    />
+                    <Select
+                      value={providerUserFilter}
+                      onValueChange={(value) =>
+                        setProviderUserFilter(value as ProviderUserFilter)
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Filtro de usuarios" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos os usuarios</SelectItem>
+                        <SelectItem value="active">Somente ativos</SelectItem>
+                        <SelectItem value="inactive">Somente inativos</SelectItem>
+                        <SelectItem value="privileged">Somente gestores/admins</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
 
                   {loadingProviderData ? (
                     <p className="text-sm text-slate-500">Carregando usuarios...</p>
                   ) : (
                     <ScrollArea className="h-[34vh] pr-2">
                       <div className="space-y-2">
-                        {filteredProviderUsers.map((user) => (
-                          <div key={user.id} className="space-y-2 rounded-lg border border-slate-200 p-3">
-                            <div className="grid gap-2 md:grid-cols-2">
-                              <Input
-                                placeholder="Usuario de acesso"
-                                value={user.username}
-                                onChange={(event) =>
-                                  updateProviderUserDraft(user.id, {
-                                    username: event.target.value,
-                                  })
-                                }
-                              />
-                              <Input
-                                placeholder="Nome completo do usuario"
-                                value={user.displayName}
-                                onChange={(event) =>
-                                  updateProviderUserDraft(user.id, {
-                                    displayName: event.target.value,
-                                  })
-                                }
-                              />
-                              <Select
-                                value={user.role}
-                                onValueChange={(value) =>
-                                  updateProviderUserDraft(user.id, {
-                                    role: value as AuthRole,
-                                  })
-                                }
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Perfil" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="viewer">Leitura</SelectItem>
-                                  <SelectItem value="editor">Editor</SelectItem>
-                                  <SelectItem value="manager">Gestor</SelectItem>
-                                  <SelectItem value="admin">Administrador</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              <Select
-                                value={user.active ? 'active' : 'inactive'}
-                                onValueChange={(value) =>
-                                  updateProviderUserDraft(user.id, {
-                                    active: value === 'active',
-                                  })
-                                }
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Status" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="active">Ativo</SelectItem>
-                                  <SelectItem value="inactive">Inativo</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              <Input
-                                type="password"
-                                placeholder={`Nova senha (opcional, minimo ${PASSWORD_MIN_LENGTH})`}
-                                value={user.password}
-                                onChange={(event) =>
-                                  updateProviderUserDraft(user.id, {
-                                    password: event.target.value,
-                                  })
-                                }
-                              />
+                        {filteredProviderUsers.map((user) => {
+                          const effectivePermissions = getUserEffectivePermissions(user);
+                          const isCustomPermissions = user.permissions !== null;
+                          return (
+                            <div
+                              key={user.id}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="text-sm font-semibold text-slate-900">
+                                    {user.displayName}
+                                  </p>
+                                  <Badge
+                                    variant="outline"
+                                    className="border-slate-200 bg-slate-50 text-slate-700"
+                                  >
+                                    {ROLE_LABELS[user.role]}
+                                  </Badge>
+                                  <Badge
+                                    variant="outline"
+                                    className={
+                                      user.active
+                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                        : 'border-amber-200 bg-amber-50 text-amber-700'
+                                    }
+                                  >
+                                    {user.active ? 'Ativo' : 'Inativo'}
+                                  </Badge>
+                                  <Badge
+                                    variant="outline"
+                                    className="border-indigo-200 bg-indigo-50 text-indigo-700"
+                                  >
+                                    {isCustomPermissions
+                                      ? `Personalizado (${effectivePermissions.length})`
+                                      : `Perfil (${effectivePermissions.length})`}
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-slate-500">{user.username}</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openUserEditor(user, 'details')}
+                                >
+                                  Editar
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openUserEditor(user, 'permissions')}
+                                >
+                                  Permissoes
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => void toggleProviderUserActive(user)}
+                                >
+                                  {user.active ? 'Revogar' : 'Ativar'}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => void handleDeleteProviderUser(user)}
+                                >
+                                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                                  Excluir
+                                </Button>
+                              </div>
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                              <Button variant="outline" onClick={() => void handleSaveProviderUser(user)}>
-                                Salvar
-                              </Button>
-                              <Button variant="outline" onClick={() => void handleDeleteProviderUser(user)}>
-                                <Trash2 className="mr-1 h-4 w-4" />
-                                Excluir
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                         {filteredProviderUsers.length === 0 && (
                           <p className="text-sm text-slate-500">
                             Nenhum usuario encontrado para o filtro atual.
@@ -1932,6 +2086,179 @@ export function SystemDashboard() {
                       </div>
                     </ScrollArea>
                   )}
+
+                  <Dialog
+                    open={Boolean(userEditor)}
+                    onOpenChange={(open) => {
+                      if (!open) closeUserEditor();
+                    }}
+                  >
+                    {userEditor && (
+                      <DialogContent className="sm:max-w-3xl">
+                        <DialogHeader>
+                          <DialogTitle>Editar usuario</DialogTitle>
+                          <p className="text-xs text-slate-500">
+                            {selectedProvider?.name} · {userEditor.username}
+                          </p>
+                        </DialogHeader>
+                        <Tabs
+                          value={userEditorTab}
+                          onValueChange={(value) =>
+                            setUserEditorTab(value as 'details' | 'permissions')
+                          }
+                          className="space-y-4"
+                        >
+                          <TabsList className="w-full justify-start">
+                            <TabsTrigger value="details">Dados</TabsTrigger>
+                            <TabsTrigger value="permissions">Permissoes</TabsTrigger>
+                          </TabsList>
+                          <TabsContent value="details">
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <div className="space-y-1">
+                                <Label>Usuario de acesso</Label>
+                                <Input
+                                  value={userEditor.username}
+                                  onChange={(event) =>
+                                    updateUserEditor({ username: event.target.value })
+                                  }
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>Nome completo</Label>
+                                <Input
+                                  value={userEditor.displayName}
+                                  onChange={(event) =>
+                                    updateUserEditor({ displayName: event.target.value })
+                                  }
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>Perfil</Label>
+                                <Select
+                                  value={userEditor.role}
+                                  onValueChange={(value) =>
+                                    updateUserEditor({ role: value as AuthRole })
+                                  }
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Perfil" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="viewer">Leitura</SelectItem>
+                                    <SelectItem value="editor">Editor</SelectItem>
+                                    <SelectItem value="manager">Gestor</SelectItem>
+                                    <SelectItem value="admin">Administrador</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="space-y-1">
+                                <Label>Status</Label>
+                                <Select
+                                  value={userEditor.active ? 'active' : 'inactive'}
+                                  onValueChange={(value) =>
+                                    updateUserEditor({ active: value === 'active' })
+                                  }
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Status" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="active">Ativo</SelectItem>
+                                    <SelectItem value="inactive">Inativo</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="space-y-1 md:col-span-2">
+                                <Label>Nova senha (opcional)</Label>
+                                <Input
+                                  type="password"
+                                  placeholder={`Minimo ${PASSWORD_MIN_LENGTH} caracteres`}
+                                  value={userEditor.password}
+                                  onChange={(event) =>
+                                    updateUserEditor({ password: event.target.value })
+                                  }
+                                />
+                              </div>
+                            </div>
+                          </TabsContent>
+                          <TabsContent value="permissions">
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                <div>
+                                  <p className="text-sm font-medium text-slate-900">
+                                    Permissoes personalizadas
+                                  </p>
+                                  <p className="text-xs text-slate-500">
+                                    {userEditor.permissions === null
+                                      ? `Usando perfil ${ROLE_LABELS[userEditor.role]}`
+                                      : 'Edite as permissoes deste usuario.'}
+                                  </p>
+                                </div>
+                                <Switch
+                                  checked={userEditor.permissions !== null}
+                                  onCheckedChange={(checked) => {
+                                    updateUserEditor({
+                                      permissions: checked
+                                        ? getRolePermissions(userEditor.role)
+                                        : null,
+                                    });
+                                  }}
+                                />
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                {USER_PERMISSION_OPTIONS.map((permission) => {
+                                  const currentPermissions =
+                                    userEditor.permissions ??
+                                    getRolePermissions(userEditor.role);
+                                  return (
+                                    <label
+                                      key={`${userEditor.id}:${permission}`}
+                                      className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white p-2"
+                                    >
+                                      <Checkbox
+                                        checked={currentPermissions.includes(permission)}
+                                        disabled={userEditor.permissions === null}
+                                        onCheckedChange={(checked) => {
+                                          if (userEditor.permissions === null) return;
+                                          updateUserEditor({
+                                            permissions: togglePermission(
+                                              userEditor.permissions,
+                                              permission,
+                                              checked === true
+                                            ),
+                                          });
+                                        }}
+                                      />
+                                      <span className="text-xs text-slate-700">
+                                        <span className="block font-medium text-slate-900">
+                                          {PERMISSION_LABELS[permission]}
+                                        </span>
+                                        {permission}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </TabsContent>
+                        </Tabs>
+                        <DialogFooter>
+                          <Button variant="outline" onClick={closeUserEditor}>
+                            Cancelar
+                          </Button>
+                          <Button
+                            onClick={async () => {
+                              if (!userEditor) return;
+                              const saved = await handleSaveProviderUser(userEditor);
+                              if (saved) closeUserEditor();
+                            }}
+                          >
+                            Salvar
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    )}
+                  </Dialog>
                 </>
               )}
             </CardContent>
@@ -2028,12 +2355,26 @@ export function SystemDashboard() {
 
         <Card className="border-slate-200">
           <CardHeader>
-            <CardTitle className="text-base">Perfis e permissoes do provedor</CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">Perfis e permissoes do provedor</CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowRoleManagement((current) => !current)}
+              >
+                {showRoleManagement ? 'Ocultar perfis' : 'Mostrar perfis'}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {!selectedProvider ? (
               <p className="text-sm text-slate-500">
                 Selecione um provedor para editar perfis e permissoes.
+              </p>
+            ) : !showRoleManagement ? (
+              <p className="text-sm text-slate-500">
+                As permissoes agora podem ser ajustadas por usuario. Use "Mostrar perfis" para
+                editar os perfis base quando necessario.
               </p>
             ) : loadingProviderData ? (
               <p className="text-sm text-slate-500">Carregando perfis...</p>
@@ -2049,7 +2390,7 @@ export function SystemDashboard() {
                         <div>
                           <p className="font-semibold text-slate-900">{ROLE_LABELS[roleId]}</p>
                           <p className="text-xs text-slate-500">
-                            perfil herdado: {role?.parentRole || 'nenhum'} | diretas: {directPermissions.length}
+                            permissoes diretas: {directPermissions.length}
                             {role ? ` | efetivas: ${role.effectivePermissions.length}` : ''}
                           </p>
                         </div>

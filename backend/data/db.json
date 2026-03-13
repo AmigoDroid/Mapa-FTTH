@@ -263,6 +263,16 @@
   ],
   "systemAuditLogs": [
     {
+      "id": "630cc33f-7052-4860-8c54-cf664ae9d60b",
+      "createdAt": "2026-03-13T22:07:20.382Z",
+      "actorType": "system",
+      "actorId": "sys-root-admin",
+      "action": "system.auth.login",
+      "targetType": "session",
+      "targetId": "sys-root-admin",
+      "details": "Login global realizado."
+    },
+    {
       "id": "2d554b34-a337-4a10-9c8f-3813041bf5bd",
       "createdAt": "2026-03-10T16:18:20.937Z",
       "actorType": "system",

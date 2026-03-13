@@ -16,6 +16,7 @@ interface CreateUserPayload {
   password: string;
   role: AuthRole;
   active?: boolean;
+  permissions?: AuthPermission[] | null;
 }
 
 interface UpdateUserPayload {
@@ -24,6 +25,7 @@ interface UpdateUserPayload {
   password?: string;
   role?: AuthRole;
   active?: boolean;
+  permissions?: AuthPermission[] | null;
 }
 
 interface UpdateLicensePayload {

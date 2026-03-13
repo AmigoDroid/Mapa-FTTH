@@ -2,14 +2,30 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { toast } from 'sonner';
 import { adminApi } from '@/api/adminApi';
 import type { ApiAuditLog, ApiLicense, ApiRole, ApiSessionUser } from '@/api/types';
-import { ROLE_LABELS, type AuthRole } from '@/auth/permissions';
+import {
+  ALL_AUTH_PERMISSIONS,
+  PERMISSION_LABELS,
+  ROLE_LABELS,
+  listPermissionsForRole,
+  type AuthPermission,
+  type AuthRole,
+} from '@/auth/permissions';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ProjectSummary } from '@/store/projectStorage';
 import { Download, FolderKanban, LogOut, Plus, Search, ShieldCheck, Trash2, Users } from 'lucide-react';
@@ -55,6 +71,32 @@ const formatDate = (value: string) => {
   return new Date(parsed).toLocaleString('pt-BR');
 };
 
+const PASSWORD_MIN_LENGTH = 8;
+const USERNAME_REGEX = /^[a-z0-9._-]{3,40}$/;
+const DISPLAY_NAME_MIN_LENGTH = 3;
+const USER_PERMISSION_OPTIONS = ALL_AUTH_PERMISSIONS.filter(
+  (permission) => permission !== 'license.update'
+);
+const USER_PERMISSION_SET = new Set<AuthPermission>(USER_PERMISSION_OPTIONS);
+
+const mapUserToDraft = (user: ApiSessionUser) => ({
+  id: user.id,
+  username: user.username,
+  displayName: user.displayName,
+  role: user.role,
+  active: user.active,
+  permissions: Array.isArray(user.permissions) ? user.permissions : null,
+  password: '',
+});
+
+type UserDraft = ReturnType<typeof mapUserToDraft>;
+
+const getRoleEffectivePermissions = (roles: ApiRole[], roleId: AuthRole): AuthPermission[] => {
+  const role = roles.find((item) => item.id === roleId);
+  if (role) return role.effectivePermissions;
+  return listPermissionsForRole(roleId);
+};
+
 export function ProjectDashboard({
   currentProviderName,
   currentUserName,
@@ -96,6 +138,11 @@ export function ProjectDashboard({
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<AuthRole>('viewer');
+  const [newUserUseCustomPermissions, setNewUserUseCustomPermissions] = useState(false);
+  const [newUserPermissions, setNewUserPermissions] = useState<AuthPermission[]>([]);
+
+  const [userEditor, setUserEditor] = useState<UserDraft | null>(null);
+  const [userEditorTab, setUserEditorTab] = useState<'details' | 'permissions'>('details');
 
   const filteredProjects = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -108,6 +155,49 @@ export function ProjectDashboard({
       return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
     });
   }, [projects, searchTerm, sortBy]);
+
+  const getRolePermissions = useCallback(
+    (roleId: AuthRole) =>
+      getRoleEffectivePermissions(roles, roleId).filter((permission) =>
+        USER_PERMISSION_SET.has(permission)
+      ),
+    [roles]
+  );
+
+  const getUserEffectivePermissions = useCallback(
+    (user: UserDraft) =>
+      user.permissions
+        ? user.permissions.filter((permission) => USER_PERMISSION_SET.has(permission))
+        : getRolePermissions(user.role),
+    [getRolePermissions]
+  );
+
+  const togglePermission = useCallback(
+    (current: AuthPermission[], permission: AuthPermission, enabled: boolean) => {
+      const next = new Set(current);
+      if (enabled) next.add(permission);
+      else next.delete(permission);
+      return Array.from(next);
+    },
+    []
+  );
+
+  const openUserEditor = useCallback(
+    (user: ApiSessionUser, tab: 'details' | 'permissions' = 'details') => {
+      setUserEditor(mapUserToDraft(user));
+      setUserEditorTab(tab);
+    },
+    []
+  );
+
+  const closeUserEditor = useCallback(() => {
+    setUserEditor(null);
+    setUserEditorTab('details');
+  }, []);
+
+  const updateUserEditor = useCallback((patch: Partial<Omit<UserDraft, 'id'>>) => {
+    setUserEditor((current) => (current ? { ...current, ...patch } : current));
+  }, []);
 
   const loadAdminData = useCallback(async () => {
     if (!canReadUsers && !canReadRoles && !canReadLicense && !canReadAudit) return;
@@ -157,22 +247,43 @@ export function ProjectDashboard({
   const handleCreateUser = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canManageUsers) return;
-    if (!newUsername.trim() || !newDisplayName.trim() || !newPassword.trim()) {
+    const username = newUsername.trim().toLowerCase();
+    const displayName = newDisplayName.trim();
+    const password = newPassword.trim();
+    if (!username || !displayName || !password) {
       toast.error('Preencha usuario, nome e senha.');
       return;
     }
+    if (!USERNAME_REGEX.test(username)) {
+      toast.error('Usuario invalido. Use 3 a 40 caracteres sem espacos.');
+      return;
+    }
+    if (displayName.length < DISPLAY_NAME_MIN_LENGTH) {
+      toast.error('Nome do usuario deve ter ao menos 3 caracteres.');
+      return;
+    }
+    if (password.length < PASSWORD_MIN_LENGTH) {
+      toast.error(`A senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`);
+      return;
+    }
     try {
+      const permissions = newUserUseCustomPermissions
+        ? newUserPermissions.filter((permission) => USER_PERMISSION_SET.has(permission))
+        : null;
       await adminApi.createUser({
-        username: newUsername.trim(),
-        displayName: newDisplayName.trim(),
-        password: newPassword,
+        username,
+        displayName,
+        password,
         role: newRole,
         active: true,
+        ...(newUserUseCustomPermissions ? { permissions } : {}),
       });
       setNewUsername('');
       setNewDisplayName('');
       setNewPassword('');
       setNewRole('viewer');
+      setNewUserUseCustomPermissions(false);
+      setNewUserPermissions([]);
       await loadAdminData();
       toast.success('Usuario criado.');
     } catch (error) {
@@ -196,8 +307,54 @@ export function ProjectDashboard({
     try {
       await adminApi.deleteUser(user.id);
       await loadAdminData();
+      if (userEditor?.id === user.id) {
+        closeUserEditor();
+      }
     } catch (error) {
       toast.error(toErrorMessage(error, 'Falha ao remover usuario.'));
+    }
+  };
+
+  const handleSaveUser = async (draft: UserDraft) => {
+    if (!canManageUsers) return false;
+    const username = draft.username.trim().toLowerCase();
+    const displayName = draft.displayName.trim();
+    if (!username || !displayName) {
+      toast.error('Usuario e nome sao obrigatorios.');
+      return false;
+    }
+    if (!USERNAME_REGEX.test(username)) {
+      toast.error('Usuario invalido. Use 3 a 40 caracteres sem espacos.');
+      return false;
+    }
+    if (displayName.length < DISPLAY_NAME_MIN_LENGTH) {
+      toast.error('Nome do usuario deve ter ao menos 3 caracteres.');
+      return false;
+    }
+    if (draft.password.trim() && draft.password.trim().length < PASSWORD_MIN_LENGTH) {
+      toast.error(`A senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`);
+      return false;
+    }
+    try {
+      const permissions =
+        draft.permissions === null
+          ? null
+          : draft.permissions.filter((permission) => USER_PERMISSION_SET.has(permission));
+      await adminApi.updateUser(draft.id, {
+        username,
+        displayName,
+        role: draft.role,
+        active: draft.active,
+        permissions,
+        ...(draft.password.trim() ? { password: draft.password.trim() } : {}),
+      });
+      await loadAdminData();
+      await onRefreshSession();
+      toast.success('Usuario atualizado.');
+      return true;
+    } catch (error) {
+      toast.error(toErrorMessage(error, 'Falha ao atualizar usuario.'));
+      return false;
     }
   };
 
@@ -358,38 +515,294 @@ export function ProjectDashboard({
               <CardHeader><CardTitle className="flex items-center gap-2"><Users className="h-4 w-4" />Usuarios</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 {canManageUsers && (
-                  <form onSubmit={handleCreateUser} className="grid gap-2 md:grid-cols-5">
-                    <Input placeholder="usuario" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
-                    <Input placeholder="nome" value={newDisplayName} onChange={(e) => setNewDisplayName(e.target.value)} />
-                    <Input type="password" placeholder="senha" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-                    <Select value={newRole} onValueChange={(value) => setNewRole(value as AuthRole)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="viewer">Leitura</SelectItem>
-                        <SelectItem value="editor">Editor</SelectItem>
-                        <SelectItem value="manager">Gestor</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button type="submit">Criar</Button>
-                  </form>
+                  <>
+                    <form onSubmit={handleCreateUser} className="grid gap-2 md:grid-cols-5">
+                      <Input placeholder="usuario" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+                      <Input placeholder="nome" value={newDisplayName} onChange={(e) => setNewDisplayName(e.target.value)} />
+                      <Input type="password" placeholder="senha" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+                      <Select value={newRole} onValueChange={(value) => setNewRole(value as AuthRole)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="viewer">Leitura</SelectItem>
+                          <SelectItem value="editor">Editor</SelectItem>
+                          <SelectItem value="manager">Gestor</SelectItem>
+                          <SelectItem value="admin">Admin</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button type="submit">Criar</Button>
+                    </form>
+
+                    <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">Permissoes personalizadas</p>
+                          <p className="text-xs text-slate-500">
+                            Ative para definir permissoes especificas no cadastro.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={newUserUseCustomPermissions}
+                          onCheckedChange={(checked) => {
+                            setNewUserUseCustomPermissions(checked);
+                            setNewUserPermissions(checked ? getRolePermissions(newRole) : []);
+                          }}
+                        />
+                      </div>
+                      {newUserUseCustomPermissions && (
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {USER_PERMISSION_OPTIONS.map((permission) => (
+                            <label
+                              key={`new-user:${permission}`}
+                              className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white p-2"
+                            >
+                              <Checkbox
+                                checked={newUserPermissions.includes(permission)}
+                                onCheckedChange={(checked) =>
+                                  setNewUserPermissions((current) =>
+                                    togglePermission(current, permission, checked === true)
+                                  )
+                                }
+                              />
+                              <span className="text-xs text-slate-700">
+                                <span className="block font-medium text-slate-900">
+                                  {PERMISSION_LABELS[permission]}
+                                </span>
+                                {permission}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
-                {loadingAdminData ? <p className="text-sm text-slate-500">Carregando...</p> : users.map((user) => (
-                  <div key={user.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{user.displayName}</p>
-                      <p className="text-xs text-slate-500">{user.username} - {ROLE_LABELS[user.role]}</p>
+                {loadingAdminData ? (
+                  <p className="text-sm text-slate-500">Carregando...</p>
+                ) : (
+                  <ScrollArea className="h-[44vh] pr-2">
+                    <div className="space-y-2">
+                      {users.map((user) => {
+                        const draft = mapUserToDraft(user);
+                        const effectivePermissions = getUserEffectivePermissions(draft);
+                        const isCustomPermissions = draft.permissions !== null;
+                        return (
+                          <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-medium text-slate-900">{user.displayName}</p>
+                                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+                                  {ROLE_LABELS[user.role]}
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className={
+                                    user.active
+                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : 'border-amber-200 bg-amber-50 text-amber-700'
+                                  }
+                                >
+                                  {user.active ? 'Ativo' : 'Inativo'}
+                                </Badge>
+                                <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
+                                  {isCustomPermissions
+                                    ? `Personalizado (${effectivePermissions.length})`
+                                    : `Perfil (${effectivePermissions.length})`}
+                                </Badge>
+                              </div>
+                              <p className="text-xs text-slate-500">{user.username}</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button size="sm" variant="outline" disabled={!canManageUsers} onClick={() => openUserEditor(user, 'details')}>
+                                Editar
+                              </Button>
+                              <Button size="sm" variant="outline" disabled={!canManageUsers} onClick={() => openUserEditor(user, 'permissions')}>
+                                Permissoes
+                              </Button>
+                              <Button size="sm" variant="outline" disabled={!canManageUsers} onClick={() => void toggleUserActive(user)}>
+                                {user.active ? 'Desativar' : 'Ativar'}
+                              </Button>
+                              <Button size="sm" variant="destructive" disabled={!canManageUsers} onClick={() => void removeUser(user)}>
+                                Remover
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {users.length === 0 && (
+                        <p className="text-sm text-slate-500">Nenhum usuario encontrado.</p>
+                      )}
                     </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" disabled={!canManageUsers} onClick={() => void toggleUserActive(user)}>
-                        {user.active ? 'Desativar' : 'Ativar'}
-                      </Button>
-                      <Button size="sm" variant="outline" disabled={!canManageUsers} onClick={() => void removeUser(user)}>
-                        Remover
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  </ScrollArea>
+                )}
+
+                <Dialog
+                  open={Boolean(userEditor)}
+                  onOpenChange={(open) => {
+                    if (!open) closeUserEditor();
+                  }}
+                >
+                  {userEditor && (
+                    <DialogContent className="sm:max-w-3xl">
+                      <DialogHeader>
+                        <DialogTitle>Editar usuario</DialogTitle>
+                        <p className="text-xs text-slate-500">
+                          {currentProviderName} · {userEditor.username}
+                        </p>
+                      </DialogHeader>
+                      <Tabs
+                        value={userEditorTab}
+                        onValueChange={(value) =>
+                          setUserEditorTab(value as 'details' | 'permissions')
+                        }
+                        className="space-y-4"
+                      >
+                        <TabsList className="w-full justify-start">
+                          <TabsTrigger value="details">Dados</TabsTrigger>
+                          <TabsTrigger value="permissions">Permissoes</TabsTrigger>
+                        </TabsList>
+                        <TabsContent value="details">
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label>Usuario de acesso</Label>
+                              <Input
+                                value={userEditor.username}
+                                onChange={(event) =>
+                                  updateUserEditor({ username: event.target.value })
+                                }
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Nome completo</Label>
+                              <Input
+                                value={userEditor.displayName}
+                                onChange={(event) =>
+                                  updateUserEditor({ displayName: event.target.value })
+                                }
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Perfil</Label>
+                              <Select
+                                value={userEditor.role}
+                                onValueChange={(value) =>
+                                  updateUserEditor({ role: value as AuthRole })
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Perfil" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="viewer">Leitura</SelectItem>
+                                  <SelectItem value="editor">Editor</SelectItem>
+                                  <SelectItem value="manager">Gestor</SelectItem>
+                                  <SelectItem value="admin">Administrador</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Status</Label>
+                              <Select
+                                value={userEditor.active ? 'active' : 'inactive'}
+                                onValueChange={(value) =>
+                                  updateUserEditor({ active: value === 'active' })
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="active">Ativo</SelectItem>
+                                  <SelectItem value="inactive">Inativo</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <Label>Nova senha (opcional)</Label>
+                              <Input
+                                type="password"
+                                placeholder={`Minimo ${PASSWORD_MIN_LENGTH} caracteres`}
+                                value={userEditor.password}
+                                onChange={(event) =>
+                                  updateUserEditor({ password: event.target.value })
+                                }
+                              />
+                            </div>
+                          </div>
+                        </TabsContent>
+                        <TabsContent value="permissions">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                              <div>
+                                <p className="text-sm font-medium text-slate-900">Permissoes personalizadas</p>
+                                <p className="text-xs text-slate-500">
+                                  {userEditor.permissions === null
+                                    ? `Usando perfil ${ROLE_LABELS[userEditor.role]}`
+                                    : 'Edite as permissoes deste usuario.'}
+                                </p>
+                              </div>
+                              <Switch
+                                checked={userEditor.permissions !== null}
+                                onCheckedChange={(checked) => {
+                                  updateUserEditor({
+                                    permissions: checked ? getRolePermissions(userEditor.role) : null,
+                                  });
+                                }}
+                              />
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                              {USER_PERMISSION_OPTIONS.map((permission) => {
+                                const currentPermissions =
+                                  userEditor.permissions ?? getRolePermissions(userEditor.role);
+                                return (
+                                  <label
+                                    key={`${userEditor.id}:${permission}`}
+                                    className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white p-2"
+                                  >
+                                    <Checkbox
+                                      checked={currentPermissions.includes(permission)}
+                                      disabled={userEditor.permissions === null}
+                                      onCheckedChange={(checked) => {
+                                        if (userEditor.permissions === null) return;
+                                        updateUserEditor({
+                                          permissions: togglePermission(
+                                            userEditor.permissions,
+                                            permission,
+                                            checked === true
+                                          ),
+                                        });
+                                      }}
+                                    />
+                                    <span className="text-xs text-slate-700">
+                                      <span className="block font-medium text-slate-900">
+                                        {PERMISSION_LABELS[permission]}
+                                      </span>
+                                      {permission}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </TabsContent>
+                      </Tabs>
+                      <DialogFooter>
+                        <Button variant="outline" onClick={closeUserEditor}>
+                          Cancelar
+                        </Button>
+                        <Button
+                          disabled={!canManageUsers}
+                          onClick={async () => {
+                            if (!userEditor) return;
+                            const saved = await handleSaveUser(userEditor);
+                            if (saved) closeUserEditor();
+                          }}
+                        >
+                          Salvar
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  )}
+                </Dialog>
               </CardContent>
             </Card>
           </TabsContent>
@@ -398,6 +811,9 @@ export function ProjectDashboard({
             <Card className="border-slate-200">
               <CardHeader><CardTitle className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" />Permissoes por perfil</CardTitle></CardHeader>
               <CardContent className="space-y-3">
+                <p className="text-xs text-slate-500">
+                  Permissoes base do perfil. No tab Usuarios voce pode personalizar permissoes por pessoa.
+                </p>
                 {roles.map((role) => (
                   <RoleEditor key={role.id} role={role} canManageRoles={canManageRoles} onSave={saveRolePermissions} />
                 ))}

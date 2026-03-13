@@ -2,7 +2,12 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { ALL_PERMISSIONS, AUTH_ROLES, PERMISSIONS } from '../constants.js';
 import { computeLicenseState, countActiveUsers, serializeLicense } from '../license.js';
-import { hasPermission, listPermissionsForRole, roleExists } from '../rbac.js';
+import {
+  hasPermission,
+  listPermissionsForRole,
+  resolveUserPermissions,
+  roleExists,
+} from '../rbac.js';
 import { hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from '../security.js';
 import {
   appendProviderAuditLog,
@@ -40,7 +45,7 @@ const providerSessionPayload = (provider, user) => ({
     updatedAt: provider.updatedAt,
   },
   user: toPublicUser(user),
-  permissions: listPermissionsForRole(provider.roles, user.role),
+  permissions: resolveUserPermissions(provider, user),
   license: serializeLicense(provider.license, provider.users),
 });
 
@@ -48,6 +53,30 @@ const PASSWORD_MIN_LENGTH = 8;
 const USERNAME_REGEX = /^[a-z0-9._-]{3,40}$/;
 const PROVIDER_SLUG_REGEX = /^[a-z0-9-]{3,80}$/;
 const isValidDisplayName = (value) => value.length >= 3 && value.length <= 80;
+const parsePermissionsInput = (raw) => {
+  if (raw === undefined) return { provided: false };
+  if (raw === null) return { provided: true, permissions: null };
+  if (!Array.isArray(raw)) {
+    return {
+      error: 'Envie permissoes como array ou null para usar o perfil.',
+    };
+  }
+  const normalized = raw.map((item) => String(item).trim());
+  const invalidPermissions = normalized.filter(
+    (permission) => !ALL_PERMISSIONS.includes(permission)
+  );
+  if (invalidPermissions.length > 0) {
+    return {
+      error: `Permissoes invalidas: ${invalidPermissions.join(', ')}`,
+    };
+  }
+  if (normalized.includes(PERMISSIONS.LICENSE_UPDATE)) {
+    return {
+      error: 'Permissao license.update e exclusiva do administrador global.',
+    };
+  }
+  return { provided: true, permissions: Array.from(new Set(normalized)) };
+};
 
 export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
   const router = express.Router();
@@ -94,7 +123,7 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         db,
         provider,
         user,
-        permissions: listPermissionsForRole(provider.roles, user.role),
+        permissions: resolveUserPermissions(provider, user),
       };
       next();
     } catch {
@@ -268,6 +297,7 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
       const password = String(req.body?.password || '').trim();
       const role = String(req.body?.role || '').trim();
       const active = Boolean(req.body?.active ?? true);
+      const parsedPermissions = parsePermissionsInput(req.body?.permissions);
 
       if (!username || !displayName || !password || !role) {
         res
@@ -296,6 +326,11 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         res.status(400).json({
           message: `A senha deve ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.`,
         });
+        return;
+      }
+
+      if (parsedPermissions?.error) {
+        res.status(400).json({ message: parsedPermissions.error });
         return;
       }
 
@@ -330,6 +365,9 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         createdAt,
         updatedAt: createdAt,
       };
+      if (parsedPermissions?.provided && Array.isArray(parsedPermissions.permissions)) {
+        user.permissions = parsedPermissions.permissions;
+      }
 
       await mutateDb((current) => {
         const targetProvider = findProviderById(current, provider.id);
@@ -374,6 +412,7 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
       const password = req.body?.password ? String(req.body.password).trim() : undefined;
       const role = req.body?.role ? String(req.body.role).trim() : undefined;
       const active = typeof req.body?.active === 'boolean' ? req.body.active : undefined;
+      const parsedPermissions = parsePermissionsInput(req.body?.permissions);
 
       if (
         username &&
@@ -411,6 +450,11 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         return;
       }
 
+      if (parsedPermissions?.error) {
+        res.status(400).json({ message: parsedPermissions.error });
+        return;
+      }
+
       if (
         active === true &&
         !currentUser.active &&
@@ -429,6 +473,13 @@ export const createProviderRouter = ({ jwtSecret, accessTokenTtl }) => {
         passwordHash: password ? hashPassword(password) : currentUser.passwordHash,
         updatedAt: nowIso(),
       };
+      if (parsedPermissions?.provided) {
+        if (parsedPermissions.permissions === null) {
+          delete nextUser.permissions;
+        } else {
+          nextUser.permissions = parsedPermissions.permissions;
+        }
+      }
 
       const nextUsers = (provider.users || []).map((item) =>
         item.id === userId ? nextUser : item

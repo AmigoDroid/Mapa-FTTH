@@ -47,6 +47,7 @@ interface CreateProviderUserPayload {
   password: string;
   role: AuthRole;
   active?: boolean;
+  permissions?: AuthPermission[] | null;
 }
 
 interface UpdateProviderUserPayload {
@@ -55,6 +56,7 @@ interface UpdateProviderUserPayload {
   password?: string;
   role?: AuthRole;
   active?: boolean;
+  permissions?: AuthPermission[] | null;
 }
 
 interface CreateProviderProjectPayload {

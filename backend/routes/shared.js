@@ -1,3 +1,4 @@
+import { PERMISSIONS } from '../constants.js';
 import { countActiveUsers, serializeLicense } from '../license.js';
 
 export const nowIso = () => new Date().toISOString();
@@ -15,6 +16,7 @@ export const toPublicUser = (user) => ({
   displayName: user.displayName,
   role: user.role,
   active: user.active,
+  permissions: Array.isArray(user.permissions) ? user.permissions : undefined,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
@@ -27,16 +29,26 @@ export const findProviderBySlug = (db, slug) =>
     (provider) => provider.slug.toLowerCase() === String(slug || '').trim().toLowerCase()
   );
 
-export const ensureAtLeastOnePrivilegedUser = (users) =>
-  users.some((user) => user.active && (user.role === 'manager' || user.role === 'admin'));
+const PRIVILEGED_PERMISSIONS = new Set([
+  PERMISSIONS.USERS_CREATE,
+  PERMISSIONS.USERS_UPDATE,
+  PERMISSIONS.USERS_DELETE,
+  PERMISSIONS.ROLES_UPDATE,
+]);
 
-const countPrivilegedUsers = (users) =>
-  users.filter((user) => user.role === 'manager' || user.role === 'admin').length;
+const isPrivilegedUser = (user) =>
+  user.role === 'manager' ||
+  user.role === 'admin' ||
+  (Array.isArray(user.permissions) &&
+    user.permissions.some((permission) => PRIVILEGED_PERMISSIONS.has(permission)));
+
+export const ensureAtLeastOnePrivilegedUser = (users) =>
+  users.some((user) => user.active && isPrivilegedUser(user));
+
+const countPrivilegedUsers = (users) => users.filter((user) => isPrivilegedUser(user)).length;
 
 const countActivePrivilegedUsers = (users) =>
-  users.filter(
-    (user) => user.active && (user.role === 'manager' || user.role === 'admin')
-  ).length;
+  users.filter((user) => user.active && isPrivilegedUser(user)).length;
 
 const countInactiveUsers = (users) => users.filter((user) => !user.active).length;
 

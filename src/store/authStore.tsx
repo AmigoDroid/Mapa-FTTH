@@ -22,6 +22,7 @@ export interface AuthSessionUser {
   displayName: string;
   role: AuthRole;
   active: boolean;
+  permissions?: AuthPermission[];
   createdAt: string;
   updatedAt: string;
 }

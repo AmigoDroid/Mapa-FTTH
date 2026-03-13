@@ -76,6 +76,30 @@ const isValidDisplayName = (value) => value.length >= 3 && value.length <= 80;
 const isValidProviderName = (value) => value.length >= 3 && value.length <= 120;
 const isValidPlan = (value) => PLAN_REGEX.test(value);
 const isValidLicenseKey = (value) => KEY_REGEX.test(value);
+const parsePermissionsInput = (raw) => {
+  if (raw === undefined) return { provided: false };
+  if (raw === null) return { provided: true, permissions: null };
+  if (!Array.isArray(raw)) {
+    return {
+      error: 'Envie permissoes como array ou null para usar o perfil.',
+    };
+  }
+  const normalized = raw.map((item) => String(item).trim());
+  const invalidPermissions = normalized.filter(
+    (permission) => !ALL_PERMISSIONS.includes(permission)
+  );
+  if (invalidPermissions.length > 0) {
+    return {
+      error: `Permissoes invalidas: ${invalidPermissions.join(', ')}`,
+    };
+  }
+  if (normalized.includes(PERMISSIONS.LICENSE_UPDATE)) {
+    return {
+      error: 'Permissao license.update e exclusiva do administrador global.',
+    };
+  }
+  return { provided: true, permissions: Array.from(new Set(normalized)) };
+};
 
 const parsePositiveInteger = (value, fallback) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -764,6 +788,7 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
     const password = String(req.body?.password || '').trim();
     const role = String(req.body?.role || '').trim();
     const active = Boolean(req.body?.active ?? true);
+    const parsedPermissions = parsePermissionsInput(req.body?.permissions);
 
     if (!username || !displayName || !password || !role) {
       res
@@ -800,6 +825,11 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
       return;
     }
 
+    if (parsedPermissions?.error) {
+      res.status(400).json({ message: parsedPermissions.error });
+      return;
+    }
+
     if (
       (provider.users || []).some(
         (item) => item.username.toLowerCase() === username
@@ -825,6 +855,9 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
       createdAt,
       updatedAt: createdAt,
     };
+    if (parsedPermissions?.provided && Array.isArray(parsedPermissions.permissions)) {
+      user.permissions = parsedPermissions.permissions;
+    }
 
     await mutateDb((current) => {
       const targetProvider = findProviderById(current, providerId);
@@ -875,6 +908,7 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
     const password = req.body?.password ? String(req.body.password).trim() : undefined;
     const role = req.body?.role ? String(req.body.role).trim() : undefined;
     const active = typeof req.body?.active === 'boolean' ? req.body.active : undefined;
+    const parsedPermissions = parsePermissionsInput(req.body?.permissions);
 
     if (
       username &&
@@ -912,6 +946,11 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
       return;
     }
 
+    if (parsedPermissions?.error) {
+      res.status(400).json({ message: parsedPermissions.error });
+      return;
+    }
+
     if (
       active === true &&
       !currentUser.active &&
@@ -930,6 +969,13 @@ export const createSystemRouter = ({ jwtSecret, accessTokenTtl }) => {
       passwordHash: password ? hashPassword(password) : currentUser.passwordHash,
       updatedAt: nowIso(),
     };
+    if (parsedPermissions?.provided) {
+      if (parsedPermissions.permissions === null) {
+        delete nextUser.permissions;
+      } else {
+        nextUser.permissions = parsedPermissions.permissions;
+      }
+    }
 
     const nextUsers = (provider.users || []).map((item) =>
       item.id === userId ? nextUser : item
