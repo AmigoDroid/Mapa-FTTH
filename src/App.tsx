@@ -9,6 +9,7 @@ import { downloadNetworkAsKml } from '@/lib/projectKmlExport';
 import { useAuth } from '@/store/authStore';
 import { getLastOpenedProjectId, setLastOpenedProjectId, type ProjectSummary } from '@/store/projectStorage';
 import { useNetworkStore } from '@/store/networkStore';
+import type { Network } from '@/types/ftth';
 
 type AppScreen = 'dashboard' | 'workspace';
 
@@ -23,7 +24,45 @@ function App() {
   const hydratedUserIdRef = useRef<string | null>(null);
   const autosaveErrorAtRef = useRef(0);
   const projectScope = provider?.id || 'default';
-  const autosaveDelayMs = 300;
+  const currentNetworkRef = useRef<Network | null>(null);
+  const projectScopeRef = useRef(projectScope);
+  const authStateRef = useRef({
+    isAuthenticated,
+    userId: currentUser?.id || null,
+    screen,
+  });
+  const autosaveStateRef = useRef({
+    timerId: null as number | null,
+    pending: false,
+    inFlight: false,
+    firstDirtyAt: 0,
+    lastSavedAt: 0,
+    lastSavedUpdatedAt: '',
+    backoffMs: 0,
+  });
+  const autosaveConfig = {
+    debounceMs: 1200,
+    minIntervalMs: 5000,
+    maxWaitMs: 15000,
+    baseBackoffMs: 2000,
+    maxBackoffMs: 30000,
+  };
+
+  useEffect(() => {
+    currentNetworkRef.current = currentNetwork;
+  }, [currentNetwork]);
+
+  useEffect(() => {
+    projectScopeRef.current = projectScope;
+  }, [projectScope]);
+
+  useEffect(() => {
+    authStateRef.current = {
+      isAuthenticated,
+      userId: currentUser?.id || null,
+      screen,
+    };
+  }, [isAuthenticated, currentUser?.id, screen]);
 
   const refreshProjects = useCallback(async (silent = false) => {
     try {
@@ -75,34 +114,157 @@ function App() {
     };
   }, [currentUser, isAuthenticated, isHydrating, projectScope, refreshProjects, setCurrentNetwork]);
 
+  const scheduleAutosaveRef = useRef<() => void>(() => {});
+
+  const runAutosave = useCallback(() => {
+    const state = autosaveStateRef.current;
+    state.timerId = null;
+
+    const authState = authStateRef.current;
+    if (!authState.isAuthenticated || !authState.userId || authState.screen !== 'workspace') {
+      state.pending = false;
+      state.firstDirtyAt = 0;
+      return;
+    }
+
+    if (state.inFlight || !state.pending) {
+      return;
+    }
+
+    const network = currentNetworkRef.current;
+    if (!network) {
+      state.pending = false;
+      state.firstDirtyAt = 0;
+      return;
+    }
+
+    const updatedAt = network.updatedAt || '';
+    if (!updatedAt || updatedAt === state.lastSavedUpdatedAt) {
+      state.pending = false;
+      state.firstDirtyAt = 0;
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastSave = now - state.lastSavedAt;
+    if (timeSinceLastSave < autosaveConfig.minIntervalMs) {
+      scheduleAutosaveRef.current();
+      return;
+    }
+
+    state.inFlight = true;
+    const saveScope = projectScopeRef.current;
+    const saveUpdatedAt = updatedAt;
+
+    void projectApi
+      .saveProjectNetwork(network.id, network, network.name, network.description)
+      .then(() => {
+        state.lastSavedAt = Date.now();
+        state.lastSavedUpdatedAt = saveUpdatedAt;
+        state.backoffMs = 0;
+        setLastOpenedProjectId(network.id, saveScope);
+
+        if (currentNetworkRef.current?.updatedAt !== saveUpdatedAt) {
+          state.pending = true;
+          if (!state.firstDirtyAt) state.firstDirtyAt = Date.now();
+        } else {
+          state.pending = false;
+          state.firstDirtyAt = 0;
+        }
+      })
+      .catch((error) => {
+        state.pending = true;
+        state.backoffMs = state.backoffMs
+          ? Math.min(state.backoffMs * 2, autosaveConfig.maxBackoffMs)
+          : autosaveConfig.baseBackoffMs;
+        const now = Date.now();
+        if (now - autosaveErrorAtRef.current > 3000) {
+          autosaveErrorAtRef.current = now;
+          toast.error(toErrorMessage(error, 'Falha ao sincronizar projeto com a API.'));
+        }
+      })
+      .finally(() => {
+        state.inFlight = false;
+        if (state.pending) {
+          scheduleAutosaveRef.current();
+        }
+      });
+  }, [autosaveConfig.baseBackoffMs, autosaveConfig.maxBackoffMs, autosaveConfig.minIntervalMs]);
+
+  const scheduleAutosave = useCallback(() => {
+    const state = autosaveStateRef.current;
+    if (state.timerId) return;
+
+    const now = Date.now();
+    const timeSinceLastSave = now - state.lastSavedAt;
+    const timeSinceDirty = state.firstDirtyAt ? now - state.firstDirtyAt : 0;
+
+    let delay = autosaveConfig.debounceMs;
+
+    if (timeSinceLastSave < autosaveConfig.minIntervalMs) {
+      delay = Math.max(delay, autosaveConfig.minIntervalMs - timeSinceLastSave);
+    }
+
+    if (state.backoffMs > 0) {
+      delay = Math.max(delay, state.backoffMs);
+    }
+
+    if (timeSinceDirty >= autosaveConfig.maxWaitMs) {
+      delay = Math.max(0, autosaveConfig.minIntervalMs - timeSinceLastSave);
+    }
+
+    state.timerId = window.setTimeout(() => {
+      runAutosave();
+    }, delay);
+  }, [autosaveConfig.debounceMs, autosaveConfig.minIntervalMs, autosaveConfig.maxWaitMs, runAutosave]);
+
   useEffect(() => {
-    if (!isAuthenticated || !currentUser || !currentNetwork) return;
-    if (screen !== 'workspace') return;
+    scheduleAutosaveRef.current = scheduleAutosave;
+  }, [scheduleAutosave]);
 
-    const timeoutId = window.setTimeout(() => {
-      void projectApi
-        .saveProjectNetwork(
-          currentNetwork.id,
-          currentNetwork,
-          currentNetwork.name,
-          currentNetwork.description
-        )
-        .then(() => {
-          setLastOpenedProjectId(currentNetwork.id, projectScope);
-        })
-        .catch((error) => {
-          const now = Date.now();
-          if (now - autosaveErrorAtRef.current > 3000) {
-            autosaveErrorAtRef.current = now;
-            toast.error(toErrorMessage(error, 'Falha ao sincronizar projeto com a API.'));
-          }
-        });
-    }, autosaveDelayMs);
+  useEffect(() => {
+    const state = autosaveStateRef.current;
+    if (!currentNetwork?.id) {
+      if (state.timerId) {
+        window.clearTimeout(state.timerId);
+        state.timerId = null;
+      }
+      state.pending = false;
+      state.inFlight = false;
+      state.firstDirtyAt = 0;
+      state.backoffMs = 0;
+      state.lastSavedUpdatedAt = '';
+      return;
+    }
 
+    state.pending = false;
+    state.inFlight = false;
+    state.firstDirtyAt = 0;
+    state.backoffMs = 0;
+    state.lastSavedUpdatedAt = currentNetwork.updatedAt || '';
+  }, [currentNetwork?.id]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser || screen !== 'workspace' || !currentNetwork) return;
+
+    const state = autosaveStateRef.current;
+    const updatedAt = currentNetwork.updatedAt || '';
+    if (!updatedAt || updatedAt === state.lastSavedUpdatedAt) return;
+
+    state.pending = true;
+    if (!state.firstDirtyAt) state.firstDirtyAt = Date.now();
+    scheduleAutosaveRef.current();
+  }, [currentNetwork?.updatedAt, currentNetwork?.id, currentUser, isAuthenticated, screen]);
+
+  useEffect(() => {
     return () => {
-      window.clearTimeout(timeoutId);
+      const state = autosaveStateRef.current;
+      if (state.timerId) {
+        window.clearTimeout(state.timerId);
+        state.timerId = null;
+      }
     };
-  }, [currentNetwork, currentUser, isAuthenticated, projectScope, screen]);
+  }, []);
 
   const handleLogout = useCallback(() => {
     resetNetwork();
